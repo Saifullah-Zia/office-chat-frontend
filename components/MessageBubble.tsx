@@ -32,8 +32,16 @@ function formatFileSize(bytes: number): string {
 
 export default function MessageBubble({ message, isMine, onReply }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
+  const [reactions, setReactions] = useState<Record<string, number>>({});
   const timeStr = formatTime(message.createdAt);
   const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+
+  const handleReact = (emoji: string) => {
+    setReactions((prev) => ({
+      ...prev,
+      [emoji]: (prev[emoji] ?? 0) + 1,
+    }));
+  };
 
   const audioAttachment = message.attachments?.find(
     (a) =>
@@ -50,6 +58,7 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
     : message.content;
 
   const isRead = message.read ?? false;
+  const isDelivered = message.delivered ?? false;
 
   const handleCopy = () => {
     if (message.content) {
@@ -68,6 +77,17 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
 
         {/* Hover Action Bar */}
         <div className="mb-action-bar">
+          {["❤️", "👍", "😂", "😮", "😢", "🔥"].map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              className="mb-action-btn mb-emoji-btn"
+              onClick={() => handleReact(emoji)}
+              title={`React with ${emoji}`}
+            >
+              {emoji}
+            </button>
+          ))}
           {message.content && (
             <button
               type="button"
@@ -145,11 +165,21 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
           </div>
         )}
 
+        {Object.keys(reactions).length > 0 && (
+          <div className="mb-reaction-row">
+            {Object.entries(reactions).map(([emoji, count]) => (
+              <span key={emoji} className="mb-reaction-pill">
+                {emoji} {count > 1 ? count : ""}
+              </span>
+            ))}
+          </div>
+        )}
+
         <div className={`mb-footer ${isMine ? "mb-footer--mine" : "mb-footer--theirs"}`}>
           <span className="mb-time">{timeStr}</span>
           {isMine && (
-            <span className={`mb-ticks ${isRead ? "mb-ticks--read" : ""}`}>
-              {isRead ? <CheckCheck size={14} /> : <Check size={14} />}
+            <span className={`mb-ticks ${isRead ? "mb-ticks--read" : isDelivered ? "mb-ticks--delivered" : ""}`}>
+              {isRead || isDelivered ? <CheckCheck size={14} /> : <Check size={14} />}
             </span>
           )}
         </div>
@@ -186,9 +216,22 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
         .mb-action-btn {
           background: none; border: none; color: #64748b; padding: 0.25rem;
           border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center;
-          transition: color 0.1s, background 0.1s;
+          transition: color 0.1s, background 0.1s, transform 0.1s;
         }
-        .mb-action-btn:hover { color: #4f46e5; background: #e0e7ff; }
+        .mb-action-btn:hover { color: #4f46e5; background: #e0e7ff; transform: scale(1.15); }
+        .mb-emoji-btn { font-size: 0.875rem; }
+
+        .mb-reaction-row {
+          display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.15rem;
+        }
+        .mb-row--mine .mb-reaction-row { justify-content: flex-end; }
+        .mb-row--theirs .mb-reaction-row { justify-content: flex-start; }
+
+        .mb-reaction-pill {
+          background: #ffffff; border: 1px solid #e2e8f0; border-radius: 999px;
+          padding: 1px 6px; font-size: 0.75rem; display: inline-flex; align-items: center; gap: 2px;
+          box-shadow: 0 1px 2px rgba(0,0,0,0.05); font-weight: 600; color: #334155;
+        }
 
         .mb-sender-name {
           font-size: 0.75rem; font-weight: 600; color: #475569; margin-left: 0.5rem;
@@ -215,23 +258,44 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
 
         .file-card {
           display: flex; align-items: center; gap: 0.75rem;
-          padding: 0.6rem 0.875rem; border-radius: 12px;
-          transition: background 0.15s; text-decoration: none;
+          padding: 0.65rem 0.875rem; border-radius: 14px;
+          transition: transform 0.15s, box-shadow 0.15s; text-decoration: none;
+          min-width: 220px; max-width: 320px;
         }
-        .file-card--mine { background: rgba(255,255,255,0.15); color: #fff; }
-        .file-card--theirs { background: #f1f5f9; color: #0f172a; border: 1px solid #e2e8f0; }
-        .file-icon-box { display: flex; align-items: center; justify-content: center; }
-        .file-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-        .file-name { font-size: 0.8125rem; font-weight: 600; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
-        .file-size { font-size: 0.75rem; opacity: 0.8; }
-        .file-dl-icon { opacity: 0.8; }
+        .file-card:hover { transform: translateY(-1px); }
+        .file-card--mine {
+          background: #4f46e5; color: #ffffff;
+          box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25);
+        }
+        .file-card--mine .file-icon-box {
+          background: rgba(255, 255, 255, 0.2); color: #ffffff;
+          padding: 6px; border-radius: 10px; display: flex; align-items: center; justify-content: center;
+        }
+        .file-card--mine .file-name { color: #ffffff; font-weight: 600; font-size: 0.84rem; }
+        .file-card--mine .file-size { color: rgba(255, 255, 255, 0.8); font-size: 0.75rem; }
+        .file-card--mine .file-dl-icon { color: #ffffff; opacity: 0.9; }
+
+        .file-card--theirs {
+          background: #ffffff; color: #0f172a;
+          border: 1px solid #e2e8f0;
+          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+        }
+        .file-card--theirs .file-icon-box {
+          background: #e0e7ff; color: #4f46e5;
+          padding: 6px; border-radius: 10px; display: flex; align-items: center; justify-content: center;
+        }
+        .file-card--theirs .file-name { color: #0f172a; font-weight: 600; font-size: 0.84rem; }
+        .file-card--theirs .file-size { color: #64748b; font-size: 0.75rem; }
+        .file-card--theirs .file-dl-icon { color: #64748b; opacity: 0.9; }
 
         .mb-footer {
           display: flex; align-items: center; gap: 0.35rem; font-size: 0.6875rem; color: #94a3b8;
         }
         .mb-footer--mine { justify-content: flex-end; }
         .mb-footer--theirs { justify-content: flex-start; }
-        .mb-ticks--read { color: #4f46e5; }
+        .mb-ticks { color: #94a3b8; display: inline-flex; align-items: center; }
+        .mb-ticks--delivered { color: #94a3b8; }
+        .mb-ticks--read { color: #3b82f6; }
       `}</style>
     </div>
   );

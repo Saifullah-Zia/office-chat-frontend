@@ -47,6 +47,7 @@ interface AppState {
   messagesByConv: Record<number, MessageResponse[]>;
   setMessages: (convId: number, msgs: MessageResponse[]) => void;
   addMessage: (msg: MessageResponse) => void;
+  markAllAsReadInConversation: (convId: number) => void;
 
   // Typing indicators
   typingByConv: Record<number, Set<string>>;
@@ -137,6 +138,14 @@ export const useStore = create<AppState>()((set) => ({
           ...s.messagesByConv,
           [msg.conversationId]: [...current, msg],
         },
+      };
+    }),
+  markAllAsReadInConversation: (convId) =>
+    set((s) => {
+      const current = s.messagesByConv[convId] ?? [];
+      const updated = current.map((m) => ({ ...m, read: true, delivered: true }));
+      return {
+        messagesByConv: { ...s.messagesByConv, [convId]: updated },
       };
     }),
 

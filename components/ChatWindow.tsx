@@ -141,6 +141,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
     if (!conversationId) return;
     let subMsg: { unsubscribe: () => void } | null = null;
     let subTyping: { unsubscribe: () => void } | null = null;
+    let subRead: { unsubscribe: () => void } | null = null;
 
     (async () => {
       try {
@@ -149,6 +150,13 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
           addMessage(msg);
           if (msg.senderId !== userId) {
             playMessageChime();
+            if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted" && !document.hasFocus()) {
+              try {
+                new Notification(msg.senderName, {
+                  body: msg.content || "Sent an attachment",
+                });
+              } catch {}
+            }
           }
         });
 
@@ -156,6 +164,13 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
           const ev: TypingEvent = JSON.parse(frame.body);
           if (ev.userId !== userId) {
             setTyping(conversationId, ev.userName, ev.typing);
+          }
+        });
+
+        subRead = await subscribe(`/topic/conversation.${conversationId}.read`, (frame) => {
+          const ev = JSON.parse(frame.body);
+          if (ev.userId !== userId) {
+            useStore.getState().markAllAsReadInConversation(conversationId);
           }
         });
       } catch (err) {
@@ -166,6 +181,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
     return () => {
       subMsg?.unsubscribe();
       subTyping?.unsubscribe();
+      subRead?.unsubscribe();
     };
   }, [conversationId, userId, addMessage, setTyping]);
 

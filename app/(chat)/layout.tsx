@@ -23,6 +23,12 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
     }
     // Load user info into Zustand for components to use
     useStore.getState().loadUserFromStorage();
+
+    // Request browser push notification permission
+    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+
     setReady(true);
   }, [router]);
 
@@ -56,8 +62,8 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
         {incomingSignal && !activeCall && (
           <IncomingCallOverlay
             signal={incomingSignal}
-            callType={incomingCallTypeRef.current}
-            onAccept={() => acceptCall(incomingSignal, incomingCallTypeRef.current)}
+            callType={incomingSignal.callType ?? "AUDIO"}
+            onAccept={() => acceptCall(incomingSignal, incomingSignal.callType ?? "AUDIO")}
             onReject={() => rejectCall(incomingSignal)}
           />
         )}

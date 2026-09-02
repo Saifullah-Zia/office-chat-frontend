@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { Phone, PhoneOff, Video } from "lucide-react";
 import { CallSignal, CallType } from "@/types/call";
 import Avatar from "./Avatar";
@@ -17,7 +18,16 @@ export default function IncomingCallOverlay({
   onAccept,
   onReject,
 }: IncomingCallOverlayProps) {
-  const isVideo = callType === "VIDEO";
+  const isVideo = (signal.callType ?? callType) === "VIDEO";
+
+  // Trigger mobile vibration pattern
+  useEffect(() => {
+    if (typeof window !== "undefined" && "vibrate" in navigator) {
+      try {
+        navigator.vibrate([300, 200, 300, 200, 500]);
+      } catch {}
+    }
+  }, []);
 
   return (
     <div className="ico-backdrop">

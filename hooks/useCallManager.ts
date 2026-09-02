@@ -2,8 +2,74 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { subscribe, publish, Topics } from "@/lib/socket";
-import { ActiveCall, CallSignal, CallType } from "@/types/call";
+import { ActiveCall, CallSignal, CallType, CallConnectionState } from "@/types/call";
 import { useStore } from "@/lib/store";
+
+const ICE_SERVERS: RTCConfiguration = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:openrelay.metered.ca:80" },
+    {
+      urls: "turn:openrelay.metered.ca:80",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443?transport=tcp",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+  ],
+};
+
+// Web Audio API Ringtone Generator (no external audio files needed)
+function startRingtone(): () => void {
+  let audioCtx: AudioContext | null = null;
+  let intervalId: NodeJS.Timeout | null = null;
+
+  try {
+    audioCtx = new AudioContext();
+
+    const playTone = () => {
+      if (!audioCtx || audioCtx.state === "closed") return;
+      const osc1 = audioCtx.createOscillator();
+      const osc2 = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      osc1.frequency.value = 440; // A4
+      osc2.frequency.value = 480; // North American Ringback
+
+      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.2);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc1.start();
+      osc2.start();
+      osc1.stop(audioCtx.currentTime + 1.2);
+      osc2.stop(audioCtx.currentTime + 1.2);
+    };
+
+    playTone();
+    intervalId = setInterval(playTone, 3000);
+  } catch (err) {
+    console.warn("Ringtone playback error:", err);
+  }
+
+  return () => {
+    if (intervalId) clearInterval(intervalId);
+    audioCtx?.close().catch(() => {});
+  };
+}
 
 export function useCallManager(myUserId: number | null) {
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
@@ -15,13 +81,28 @@ export function useCallManager(myUserId: number | null) {
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const callTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const ringtoneStopRef = useRef<(() => void) | null>(null);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   const myUserName = useStore((s) => s.userName);
 
-  // Initialize peer connection with STUN server
+  // Stop ringtone helper
+  const stopRingtone = useCallback(() => {
+    if (ringtoneStopRef.current) {
+      ringtoneStopRef.current();
+      ringtoneStopRef.current = null;
+    }
+  }, []);
+
+  // Update active call state safely
+  const updateCallState = useCallback((patch: Partial<ActiveCall>) => {
+    setActiveCall((prev) => (prev ? { ...prev, ...patch } : null));
+  }, []);
+
+  // Create PeerConnection with STUN/TURN and connection state listeners
   const createPeerConnection = useCallback((remoteUserId: number, conversationId: number) => {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
+    const pc = new RTCPeerConnection(ICE_SERVERS);
 
     pc.onicecandidate = (event) => {
       if (event.candidate && myUserId) {
@@ -42,12 +123,45 @@ export function useCallManager(myUserId: number | null) {
       }
     };
 
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      if (state === "connected" || state === "completed") {
+        stopRingtone();
+        updateCallState({ connectionState: "connected" });
+
+        // Start duration timer if not running
+        if (!callTimerRef.current) {
+          callTimerRef.current = setInterval(() => {
+            setActiveCall((prev) => (prev ? { ...prev, durationSecs: (prev.durationSecs ?? 0) + 1 } : null));
+          }, 1000);
+        }
+      } else if (state === "checking") {
+        updateCallState({ connectionState: "connecting" });
+      } else if (state === "disconnected") {
+        updateCallState({ connectionState: "reconnecting" });
+      } else if (state === "failed") {
+        updateCallState({ connectionState: "failed" });
+      }
+    };
+
     pcRef.current = pc;
     return pc;
-  }, [myUserId, myUserName]);
+  }, [myUserId, myUserName, stopRingtone, updateCallState]);
 
-  // Clean up call state
+  // Clean up call state completely
   const hangup = useCallback(() => {
+    stopRingtone();
+
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+
+    if (callTimerRef.current) {
+      clearInterval(callTimerRef.current);
+      callTimerRef.current = null;
+    }
+
     if (activeCall && myUserId) {
       publish(Topics.userQueue(activeCall.remoteUserId), {
         type: "HANGUP",
@@ -74,7 +188,7 @@ export function useCallManager(myUserId: number | null) {
     setIncomingSignal(null);
     setIsMuted(false);
     setIsCamOff(false);
-  }, [activeCall, myUserId, myUserName]);
+  }, [activeCall, myUserId, myUserName, stopRingtone]);
 
   // Handle incoming signaling messages
   useEffect(() => {
@@ -89,7 +203,18 @@ export function useCallManager(myUserId: number | null) {
 
           if (signal.type === "OFFER") {
             setIncomingSignal(signal);
+            ringtoneStopRef.current = startRingtone();
+
+            // Auto dismiss incoming overlay after 35s if not answered
+            timeoutRef.current = setTimeout(() => {
+              stopRingtone();
+              setIncomingSignal(null);
+            }, 35000);
           } else if (signal.type === "ANSWER" && pcRef.current) {
+            if (timeoutRef.current) {
+              clearTimeout(timeoutRef.current);
+              timeoutRef.current = null;
+            }
             if (signal.sdp) {
               await pcRef.current.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: signal.sdp }));
             }
@@ -109,7 +234,7 @@ export function useCallManager(myUserId: number | null) {
     return () => {
       sub?.unsubscribe();
     };
-  }, [myUserId, hangup]);
+  }, [myUserId, hangup, stopRingtone]);
 
   // Initiate outgoing call
   const initiateCall = useCallback(async (
@@ -141,7 +266,17 @@ export function useCallManager(myUserId: number | null) {
         remoteUserName,
         callType: type,
         isInitiator: true,
+        connectionState: "ringing",
+        durationSecs: 0,
       });
+
+      ringtoneStopRef.current = startRingtone();
+
+      // 30s no-answer timeout
+      timeoutRef.current = setTimeout(() => {
+        alert("No answer.");
+        hangup();
+      }, 30000);
 
       await publish(Topics.userQueue(remoteUserId), {
         type: "OFFER",
@@ -162,6 +297,12 @@ export function useCallManager(myUserId: number | null) {
   // Accept incoming call
   const acceptCall = useCallback(async (signal: CallSignal, callType: CallType) => {
     if (!myUserId) return;
+    stopRingtone();
+
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -188,6 +329,8 @@ export function useCallManager(myUserId: number | null) {
         remoteUserName: signal.fromUserName,
         callType,
         isInitiator: false,
+        connectionState: "connecting",
+        durationSecs: 0,
       });
       setIncomingSignal(null);
 
@@ -203,10 +346,16 @@ export function useCallManager(myUserId: number | null) {
       console.error("Failed to accept call:", err);
       hangup();
     }
-  }, [myUserId, myUserName, createPeerConnection, hangup]);
+  }, [myUserId, myUserName, createPeerConnection, hangup, stopRingtone]);
 
   // Reject incoming call
   const rejectCall = useCallback((signal: CallSignal) => {
+    stopRingtone();
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+
     if (myUserId) {
       publish(Topics.userQueue(signal.fromUserId), {
         type: "HANGUP",
@@ -217,7 +366,7 @@ export function useCallManager(myUserId: number | null) {
       } satisfies CallSignal).catch(() => {});
     }
     setIncomingSignal(null);
-  }, [myUserId, myUserName]);
+  }, [myUserId, myUserName, stopRingtone]);
 
   // Toggle Mute
   const toggleMute = useCallback(() => {

@@ -55,3 +55,6 @@ export const apiPostForm = <T>(url: string, form: FormData) =>
   api
     .post<T>(url, form, { headers: { "Content-Type": "multipart/form-data" } })
     .then((r) => r.data);
+
+export const apiDelete = <T>(url: string) =>
+  api.delete<T>(url).then((r) => r.data);

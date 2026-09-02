@@ -1,4 +1,5 @@
 export type CallType = "AUDIO" | "VIDEO";
+export type CallConnectionState = "connecting" | "ringing" | "connected" | "reconnecting" | "failed";
 
 export interface CallSignal {
   type: "OFFER" | "ANSWER" | "ICE_CANDIDATE" | "HANGUP";
@@ -19,4 +20,6 @@ export interface ActiveCall {
   remoteUserName: string;
   callType: CallType;
   isInitiator: boolean;
+  connectionState?: CallConnectionState;
+  durationSecs?: number;
 }
