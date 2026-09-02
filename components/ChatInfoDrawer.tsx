@@ -277,8 +277,8 @@ export default function ChatInfoDrawer({
         .cid-drawer {
           width: 310px;
           height: 100%;
-          background: #ffffff;
-          border-left: 1px solid #e2e8f0;
+          background: var(--bg-primary);
+          border-left: 1px solid var(--border);
           display: flex;
           flex-direction: column;
           flex-shrink: 0;
@@ -287,7 +287,7 @@ export default function ChatInfoDrawer({
         .cid-header {
           height: 64px;
           padding: 0 1.25rem;
-          border-bottom: 1px solid #e2e8f0;
+          border-bottom: 1px solid var(--border);
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -295,20 +295,20 @@ export default function ChatInfoDrawer({
         .cid-header h3 {
           font-size: 1rem;
           font-weight: 700;
-          color: #0f172a;
+          color: var(--text-primary);
           margin: 0;
         }
         .cid-close {
           background: none;
           border: none;
-          color: #64748b;
+          color: var(--text-muted);
           cursor: pointer;
           padding: 0.35rem;
           border-radius: 6px;
         }
         .cid-close:hover {
-          background: #f1f5f9;
-          color: #0f172a;
+          background: var(--bg-tertiary);
+          color: var(--text-primary);
         }
         .cid-content {
           flex: 1;
@@ -329,8 +329,8 @@ export default function ChatInfoDrawer({
           width: 72px;
           height: 72px;
           border-radius: 20px;
-          background: linear-gradient(135deg, #e0e7ff, #c7d2fe);
-          color: #4f46e5;
+          background: linear-gradient(135deg, var(--accent-muted), var(--accent-deep));
+          color: var(--accent);
           display: flex;
           align-items: center;
           justify-content: center;
@@ -338,12 +338,12 @@ export default function ChatInfoDrawer({
         .cid-name {
           font-size: 1.125rem;
           font-weight: 700;
-          color: #0f172a;
+          color: var(--text-primary);
           margin: 0;
         }
         .cid-sub {
           font-size: 0.8125rem;
-          color: #64748b;
+          color: var(--text-muted);
         }
         .cid-section {
           display: flex;
@@ -353,7 +353,7 @@ export default function ChatInfoDrawer({
         .cid-section-title {
           font-size: 0.75rem;
           font-weight: 700;
-          color: #94a3b8;
+          color: var(--text-faint);
           text-transform: uppercase;
           letter-spacing: 0.05em;
           margin: 0;
@@ -369,8 +369,8 @@ export default function ChatInfoDrawer({
           gap: 0.25rem;
           font-size: 0.75rem;
           font-weight: 600;
-          color: #4f46e5;
-          background: #e0e7ff;
+          color: var(--accent);
+          background: var(--accent-soft);
           border: none;
           padding: 0.25rem 0.6rem;
           border-radius: 999px;
@@ -378,11 +378,11 @@ export default function ChatInfoDrawer({
           transition: background 0.15s;
         }
         .cid-add-btn:hover {
-          background: #c7d2fe;
+          background: var(--accent-muted);
         }
         .cid-add-box {
-          background: #f8fafc;
-          border: 1px solid #e2e8f0;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border);
           border-radius: 12px;
           padding: 0.6rem;
           display: flex;
@@ -392,11 +392,11 @@ export default function ChatInfoDrawer({
         .cid-add-title {
           font-size: 0.75rem;
           font-weight: 600;
-          color: #475569;
+          color: var(--text-tertiary);
         }
         .cid-empty-users {
           font-size: 0.75rem;
-          color: #94a3b8;
+          color: var(--text-faint);
           margin: 0;
         }
         .cid-add-list {
@@ -413,22 +413,22 @@ export default function ChatInfoDrawer({
           padding: 0.35rem 0.5rem;
           border-radius: 6px;
           border: none;
-          background: #ffffff;
+          background: var(--bg-primary);
           cursor: pointer;
           text-align: left;
           transition: background 0.12s;
         }
         .cid-add-user-item:hover {
-          background: #e0e7ff;
+          background: var(--accent-soft);
         }
         .cid-add-user-name {
           flex: 1;
           font-size: 0.78125rem;
           font-weight: 600;
-          color: #0f172a;
+          color: var(--text-primary);
         }
         .cid-add-icon {
-          color: #4f46e5;
+          color: var(--accent);
         }
 
         .cid-info-row {
@@ -436,10 +436,10 @@ export default function ChatInfoDrawer({
           align-items: center;
           gap: 0.5rem;
           font-size: 0.84375rem;
-          color: #334155;
+          color: var(--text-secondary);
         }
         .cid-info-icon {
-          color: #64748b;
+          color: var(--text-muted);
         }
         .cid-members-list {
           display: flex;
@@ -465,7 +465,7 @@ export default function ChatInfoDrawer({
         .cid-member-name {
           font-size: 0.8125rem;
           font-weight: 600;
-          color: #0f172a;
+          color: var(--text-primary);
           text-overflow: ellipsis;
           overflow: hidden;
           white-space: nowrap;
@@ -473,8 +473,8 @@ export default function ChatInfoDrawer({
         .cid-admin-badge {
           font-size: 0.625rem;
           font-weight: 700;
-          color: #15803d;
-          background: #dcfce7;
+          color: var(--success-text);
+          background: var(--success-soft);
           padding: 1px 5px;
           border-radius: 999px;
           display: inline-flex;
@@ -483,7 +483,7 @@ export default function ChatInfoDrawer({
         }
         .cid-member-sub {
           font-size: 0.75rem;
-          color: #64748b;
+          color: var(--text-muted);
           text-overflow: ellipsis;
           overflow: hidden;
           white-space: nowrap;
@@ -505,30 +505,30 @@ export default function ChatInfoDrawer({
           transition: background 0.15s, color 0.15s;
         }
         .cid-action-btn--remove {
-          color: #ef4444;
-          background: #fee2e2;
+          color: var(--danger);
+          background: var(--danger-soft);
         }
         .cid-action-btn--remove:hover {
-          background: #fca5a5;
-          color: #991b1b;
+          background: var(--danger-hover);
+          color: var(--danger-deep);
         }
 
         .cid-gallery-header {
           display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.25rem;
         }
         .cid-tabs {
-          display: flex; gap: 2px; background: #f1f5f9; padding: 2px; border-radius: 6px;
+          display: flex; gap: 2px; background: var(--bg-tertiary); padding: 2px; border-radius: 6px;
         }
         .cid-tab {
           border: none; background: transparent; font-size: 0.6875rem; font-weight: 600;
-          color: #64748b; padding: 2px 6px; border-radius: 4px; cursor: pointer; transition: all 0.1s;
+          color: var(--text-muted); padding: 2px 6px; border-radius: 4px; cursor: pointer; transition: all 0.1s;
         }
         .cid-tab--active {
-          background: #ffffff; color: #4f46e5; box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+          background: var(--bg-primary); color: var(--accent); box-shadow: var(--shadow-sm);
         }
         .cid-empty-files {
           font-size: 0.8125rem;
-          color: #94a3b8;
+          color: var(--text-faint);
           margin: 0;
         }
         .cid-files-list {
@@ -542,16 +542,16 @@ export default function ChatInfoDrawer({
           gap: 0.625rem;
           padding: 0.5rem 0.625rem;
           border-radius: 8px;
-          background: #f8fafc;
-          border: 1px solid #f1f5f9;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border);
           text-decoration: none;
           transition: background 0.12s;
         }
         .cid-file-card:hover {
-          background: #f1f5f9;
+          background: var(--bg-tertiary);
         }
         .cid-file-icon {
-          color: #4f46e5;
+          color: var(--accent);
         }
         .cid-file-meta {
           flex: 1;
@@ -562,17 +562,17 @@ export default function ChatInfoDrawer({
         .cid-file-name {
           font-size: 0.78125rem;
           font-weight: 600;
-          color: #0f172a;
+          color: var(--text-primary);
           text-overflow: ellipsis;
           overflow: hidden;
           white-space: nowrap;
         }
         .cid-file-size {
           font-size: 0.6875rem;
-          color: #64748b;
+          color: var(--text-muted);
         }
         .cid-file-dl {
-          color: #94a3b8;
+          color: var(--text-faint);
         }
       `}</style>
     </aside>

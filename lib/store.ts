@@ -132,12 +132,40 @@ export const useStore = create<AppState>()((set) => ({
   addMessage: (msg) =>
     set((s) => {
       const current = s.messagesByConv[msg.conversationId] ?? [];
-      if (current.some((m) => m.id === msg.id)) return s;
+      const exists = current.some((m) => m.id === msg.id);
+      const updated = exists
+        ? current.map((m) => (m.id === msg.id ? msg : m))
+        : [...current, msg];
+
+      let preview = msg.content;
+      if (msg.deleted) {
+        preview = "🚫 This message was deleted";
+      } else if (msg.reactionDetails && msg.reactionDetails.length > 0) {
+        const latest = msg.reactionDetails[msg.reactionDetails.length - 1];
+        const isMe = latest.userId === s.userId;
+        const name = isMe ? "You" : latest.userName;
+        const snippet = msg.content && msg.content.length > 22 ? `${msg.content.slice(0, 22)}...` : (msg.content || "message");
+        preview = `${latest.emoji} ${name} reacted to "${snippet}"`;
+      } else if (msg.type === "VOICE" || msg.type === "AUDIO") {
+        preview = "🎤 Voice note";
+      } else if (msg.type === "IMAGE") {
+        preview = "📷 Photo";
+      } else if (msg.type === "FILE") {
+        preview = "📁 File";
+      }
+
+      const updatedConvs = s.conversations.map((c) =>
+        c.id === msg.conversationId
+          ? { ...c, lastMessagePreview: preview, lastMessageAt: msg.createdAt }
+          : c
+      );
+
       return {
         messagesByConv: {
           ...s.messagesByConv,
-          [msg.conversationId]: [...current, msg],
+          [msg.conversationId]: updated,
         },
+        conversations: updatedConvs,
       };
     }),
   markAllAsReadInConversation: (convId) =>

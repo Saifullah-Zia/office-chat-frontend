@@ -70,6 +70,12 @@ export interface AttachmentResponse {
   createdAt: string;
 }
 
+export interface ReactionDetailResponse {
+  userId: number;
+  userName: string;
+  emoji: string;
+}
+
 export interface MessageResponse {
   id: number;
   conversationId: number;
@@ -78,7 +84,12 @@ export interface MessageResponse {
   content: string;
   type: MessageType;
   createdAt: string;
+  editedAt?: string;
+  edited?: boolean;
+  deleted?: boolean;
   attachments: AttachmentResponse[];
+  reactions?: Record<string, number>;
+  reactionDetails?: ReactionDetailResponse[];
   read: boolean;
   delivered: boolean;
 }
