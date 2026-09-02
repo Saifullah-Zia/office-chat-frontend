@@ -82,6 +82,7 @@ export default function VoiceRecorder({
         const att = await apiPostForm<AttachmentResponse>("/api/files/upload", formData);
 
         await onSendVoiceMessage({
+          conversationId,
           content: "",
           type: "VOICE",
           attachmentId: att.id,

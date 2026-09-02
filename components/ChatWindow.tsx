@@ -221,6 +221,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
     }
 
     const payload: MessageRequest = {
+      conversationId,
       content: trimmed,
       attachmentId,
     };
@@ -240,7 +241,11 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
 
   const handleSendVoiceMessage = async (req: MessageRequest) => {
     try {
-      const sent = await apiPost<MessageResponse>(`/api/conversations/${conversationId}/messages`, req);
+      const payload: MessageRequest = {
+        conversationId,
+        ...req,
+      };
+      const sent = await apiPost<MessageResponse>(`/api/conversations/${conversationId}/messages`, payload);
       addMessage(sent);
     } catch (err) {
       console.error("Failed to send voice message:", err);

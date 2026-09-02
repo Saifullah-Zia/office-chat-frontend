@@ -84,6 +84,7 @@ export interface MessageResponse {
 }
 
 export interface MessageRequest {
+  conversationId?: number;
   content: string;
   type?: MessageType;
   attachmentId?: number;
