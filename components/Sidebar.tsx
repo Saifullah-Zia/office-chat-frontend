@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
-  MessageSquare, Users, Search, LogOut, Plus, UsersRound, Hash, Moon, Sun,
+  MessageSquare, Users, Search, LogOut, Plus, UsersRound, Hash, Moon, Sun, BellOff,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { apiGet, apiPost } from "@/lib/api";
@@ -200,6 +200,8 @@ export default function Sidebar() {
               const isOnline = other ? onlineUserIds.has(other.id) : false;
               const active  = conv.id === activeConversationId;
               const isGroup = conv.type === "GROUP";
+              
+              const isMuted = conv.mutedUntil ? new Date(conv.mutedUntil).getTime() > Date.now() : false;
 
               const handleSelectConv = (convId: number) => {
                 if (!convId) return;
@@ -226,7 +228,14 @@ export default function Sidebar() {
                       <span className="sb-item-preview">
                         {conv.lastMessagePreview || (isGroup ? `${conv.members.length} members` : "Start chatting")}
                       </span>
-                      {conv.unreadCount > 0 && <span className="sb-badge">{conv.unreadCount > 99 ? "99+" : conv.unreadCount}</span>}
+                      <div className="sb-item-indicators">
+                        {isMuted && <BellOff size={14} className="sb-muted-icon" />}
+                        {conv.unreadCount > 0 && (
+                          <span className={`sb-badge ${isMuted ? "sb-badge--muted" : ""}`}>
+                            {conv.unreadCount > 99 ? "99+" : conv.unreadCount}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </button>
@@ -306,10 +315,13 @@ export default function Sidebar() {
         .sb-item-top { display:flex;align-items:center;justify-content:space-between; }
         .sb-item-name { font-size:0.875rem;font-weight:600;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
         .sb-item-time { font-size:0.6875rem;color:var(--text-faint);flex-shrink:0; }
-        .sb-item-bottom { display:flex;align-items:center;justify-content:space-between; }
-        .sb-item-preview { font-size:0.75rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0; }
+        .sb-item-bottom { display: flex; align-items: center; justify-content: space-between; margin-top: 0.1rem; }
+        .sb-item-preview { font-size: 0.8125rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+        .sb-item-indicators { display: flex; align-items: center; gap: 0.35rem; }
+        .sb-muted-icon { color: var(--text-muted); }
+        .sb-badge { background: var(--accent); color: var(--text-on-accent); font-size: 0.6875rem; font-weight: 700; padding: 0.1rem 0.35rem; border-radius: 999px; min-width: 1.1rem; text-align: center; }
+        .sb-badge--muted { background: var(--border); color: var(--text-muted); }
         .sb-item-role-pill { font-size:0.625rem;font-weight:600;color:var(--accent);background:var(--accent-soft);padding:0.1rem 0.4rem;border-radius:4px;flex-shrink:0; }
-        .sb-badge { background:var(--accent);color:var(--text-on-accent);font-size:0.6875rem;font-weight:700;min-width:20px;height:20px;border-radius:10px;display:flex;align-items:center;justify-content:center;padding:0 0.35rem;flex-shrink:0; }
 
         .sb-footer { padding:0.75rem 1rem;border-top:1px solid var(--border);display:flex;align-items:center;gap:0.75rem; }
         .sb-footer-info { flex:1;min-width:0;display:flex;flex-direction:column; }

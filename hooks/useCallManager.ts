@@ -1,35 +1,26 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import type {
+  IAgoraRTCClient,
+  IMicrophoneAudioTrack,
+  ICameraVideoTrack,
+} from "agora-rtc-sdk-ng";
+import { apiGet } from "@/lib/api";
 import { subscribe, publish, Topics } from "@/lib/socket";
-import { ActiveCall, CallSignal, CallType, CallConnectionState } from "@/types/call";
+import { ActiveCall, CallSignal, CallType } from "@/types/call";
 import { useStore } from "@/lib/store";
 
-const ICE_SERVERS: RTCConfiguration = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun2.l.google.com:19302" },
-    { urls: "stun:openrelay.metered.ca:80" },
-    {
-      urls: "turn:openrelay.metered.ca:80",
-      username: "openrelayproject",
-      credential: "openrelayproject",
-    },
-    {
-      urls: "turn:openrelay.metered.ca:443",
-      username: "openrelayproject",
-      credential: "openrelayproject",
-    },
-    {
-      urls: "turn:openrelay.metered.ca:443?transport=tcp",
-      username: "openrelayproject",
-      credential: "openrelayproject",
-    },
-  ],
-};
+// Safely load AgoraRTC dynamic import on client-side only (prevents SSR 500 error in Next.js)
+async function getAgoraRTC() {
+  if (typeof window === "undefined") return null;
+  const module = await import("agora-rtc-sdk-ng");
+  const AgoraRTC = module.default;
+  AgoraRTC.setLogLevel(3); // suppress noisy debug logs
+  return AgoraRTC;
+}
 
-// Web Audio API Ringtone Generator (no external audio files needed)
+// Web Audio API Ringtone Generator
 function startRingtone(): () => void {
   let audioCtx: AudioContext | null = null;
   let intervalId: NodeJS.Timeout | null = null;
@@ -43,8 +34,8 @@ function startRingtone(): () => void {
       const osc2 = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
 
-      osc1.frequency.value = 440; // A4
-      osc2.frequency.value = 480; // North American Ringback
+      osc1.frequency.value = 440;
+      osc2.frequency.value = 480;
 
       gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.2);
@@ -71,6 +62,13 @@ function startRingtone(): () => void {
   };
 }
 
+interface AgoraTokenResponse {
+  appId: string;
+  token: string;
+  channelName: string;
+  uid: number;
+}
+
 export function useCallManager(myUserId: number | null) {
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [incomingSignal, setIncomingSignal] = useState<CallSignal | null>(null);
@@ -79,15 +77,15 @@ export function useCallManager(myUserId: number | null) {
   const [isMuted, setIsMuted] = useState(false);
   const [isCamOff, setIsCamOff] = useState(false);
 
-  const pcRef = useRef<RTCPeerConnection | null>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
+  const agoraClientRef = useRef<IAgoraRTCClient | null>(null);
+  const localAudioTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
+  const localVideoTrackRef = useRef<ICameraVideoTrack | null>(null);
   const callTimerRef = useRef<NodeJS.Timeout | null>(null);
   const ringtoneStopRef = useRef<(() => void) | null>(null);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const myUserName = useStore((s) => s.userName);
 
-  // Stop ringtone helper
   const stopRingtone = useCallback(() => {
     if (ringtoneStopRef.current) {
       ringtoneStopRef.current();
@@ -95,58 +93,9 @@ export function useCallManager(myUserId: number | null) {
     }
   }, []);
 
-  // Update active call state safely
   const updateCallState = useCallback((patch: Partial<ActiveCall>) => {
     setActiveCall((prev) => (prev ? { ...prev, ...patch } : null));
   }, []);
-
-  // Create PeerConnection with STUN/TURN and connection state listeners
-  const createPeerConnection = useCallback((remoteUserId: number, conversationId: number) => {
-    const pc = new RTCPeerConnection(ICE_SERVERS);
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate && myUserId) {
-        publish(Topics.userQueue(remoteUserId), {
-          type: "ICE_CANDIDATE",
-          fromUserId: myUserId,
-          fromUserName: myUserName ?? "User",
-          toUserId: remoteUserId,
-          conversationId,
-          candidate: JSON.stringify(event.candidate),
-        } satisfies CallSignal).catch(console.error);
-      }
-    };
-
-    pc.ontrack = (event) => {
-      if (event.streams && event.streams[0]) {
-        setRemoteStream(event.streams[0]);
-      }
-    };
-
-    pc.oniceconnectionstatechange = () => {
-      const state = pc.iceConnectionState;
-      if (state === "connected" || state === "completed") {
-        stopRingtone();
-        updateCallState({ connectionState: "connected" });
-
-        // Start duration timer if not running
-        if (!callTimerRef.current) {
-          callTimerRef.current = setInterval(() => {
-            setActiveCall((prev) => (prev ? { ...prev, durationSecs: (prev.durationSecs ?? 0) + 1 } : null));
-          }, 1000);
-        }
-      } else if (state === "checking") {
-        updateCallState({ connectionState: "connecting" });
-      } else if (state === "disconnected") {
-        updateCallState({ connectionState: "reconnecting" });
-      } else if (state === "failed") {
-        updateCallState({ connectionState: "failed" });
-      }
-    };
-
-    pcRef.current = pc;
-    return pc;
-  }, [myUserId, myUserName, stopRingtone, updateCallState]);
 
   // Clean up call state completely
   const hangup = useCallback(() => {
@@ -172,14 +121,20 @@ export function useCallManager(myUserId: number | null) {
       } satisfies CallSignal).catch(() => {});
     }
 
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
+    // Unpublish and close local Agora tracks
+    if (localAudioTrackRef.current) {
+      localAudioTrackRef.current.close();
+      localAudioTrackRef.current = null;
+    }
+    if (localVideoTrackRef.current) {
+      localVideoTrackRef.current.close();
+      localVideoTrackRef.current = null;
     }
 
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
-      localStreamRef.current = null;
+    // Leave Agora RTC channel
+    if (agoraClientRef.current) {
+      agoraClientRef.current.leave().catch(() => {});
+      agoraClientRef.current = null;
     }
 
     setLocalStream(null);
@@ -190,7 +145,64 @@ export function useCallManager(myUserId: number | null) {
     setIsCamOff(false);
   }, [activeCall, myUserId, myUserName, stopRingtone]);
 
-  // Handle incoming signaling messages
+  // Setup Agora RTC client instance with event listeners
+  const setupAgoraClient = useCallback(async (remoteUserId: number) => {
+    const AgoraRTC = await getAgoraRTC();
+    if (!AgoraRTC) return null;
+
+    const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+
+    client.on("user-published", async (user, mediaType) => {
+      try {
+        await client.subscribe(user, mediaType);
+
+        if (mediaType === "audio") {
+          user.audioTrack?.play();
+        }
+
+        // Build remote stream for CallWindow video UI
+        const tracks: MediaStreamTrack[] = [];
+        if (user.audioTrack) tracks.push(user.audioTrack.getMediaStreamTrack());
+        if (user.videoTrack) tracks.push(user.videoTrack.getMediaStreamTrack());
+
+        if (tracks.length > 0) {
+          setRemoteStream(new MediaStream(tracks));
+        }
+
+        stopRingtone();
+        updateCallState({ connectionState: "connected" });
+
+        // Start duration timer
+        if (!callTimerRef.current) {
+          callTimerRef.current = setInterval(() => {
+            setActiveCall((prev) => (prev ? { ...prev, durationSecs: (prev.durationSecs ?? 0) + 1 } : null));
+          }, 1000);
+        }
+      } catch (err) {
+        console.error("[Agora] Error subscribing to remote user:", err);
+      }
+    });
+
+    client.on("user-unpublished", (user, mediaType) => {
+      if (mediaType === "video") {
+        setRemoteStream((prev) => {
+          if (!prev) return null;
+          const videoTracks = prev.getVideoTracks();
+          videoTracks.forEach((t) => prev.removeTrack(t));
+          return new MediaStream(prev.getTracks());
+        });
+      }
+    });
+
+    client.on("user-left", () => {
+      hangup();
+    });
+
+    agoraClientRef.current = client;
+    return client;
+  }, [stopRingtone, updateCallState, hangup]);
+
+  // Handle WebSocket call signaling
   useEffect(() => {
     if (!myUserId) return;
     let sub: { unsubscribe: () => void } | null = null;
@@ -205,23 +217,17 @@ export function useCallManager(myUserId: number | null) {
             setIncomingSignal(signal);
             ringtoneStopRef.current = startRingtone();
 
-            // Auto dismiss incoming overlay after 35s if not answered
             timeoutRef.current = setTimeout(() => {
               stopRingtone();
               setIncomingSignal(null);
             }, 35000);
-          } else if (signal.type === "ANSWER" && pcRef.current) {
+          } else if (signal.type === "ANSWER") {
             if (timeoutRef.current) {
               clearTimeout(timeoutRef.current);
               timeoutRef.current = null;
             }
-            if (signal.sdp) {
-              await pcRef.current.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: signal.sdp }));
-            }
-          } else if (signal.type === "ICE_CANDIDATE" && pcRef.current) {
-            if (signal.candidate) {
-              await pcRef.current.addIceCandidate(new RTCIceCandidate(JSON.parse(signal.candidate)));
-            }
+            stopRingtone();
+            updateCallState({ connectionState: "connected" });
           } else if (signal.type === "HANGUP") {
             hangup();
           }
@@ -234,7 +240,7 @@ export function useCallManager(myUserId: number | null) {
     return () => {
       sub?.unsubscribe();
     };
-  }, [myUserId, hangup, stopRingtone]);
+  }, [myUserId, hangup, stopRingtone, updateCallState]);
 
   // Initiate outgoing call
   const initiateCall = useCallback(async (
@@ -245,20 +251,52 @@ export function useCallManager(myUserId: number | null) {
   ) => {
     if (!myUserId) return;
 
+    const channelName = `call_conv_${conversationId}`;
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: type === "VIDEO",
+      const AgoraRTC = await getAgoraRTC();
+      if (!AgoraRTC) return;
+
+      // Fetch token from Spring Boot backend
+      const { appId, token } = await apiGet<AgoraTokenResponse>(
+        `/api/agora/token?channelName=${encodeURIComponent(channelName)}&uid=${myUserId}`
+      );
+
+      const effectiveAppId = appId || process.env.NEXT_PUBLIC_AGORA_APP_ID || "";
+      if (!effectiveAppId) {
+        alert("Agora App ID is missing. Please configure NEXT_PUBLIC_AGORA_APP_ID.");
+        return;
+      }
+
+      const client = await setupAgoraClient(remoteUserId);
+      if (!client) return;
+
+      // Join Agora channel
+      await client.join(effectiveAppId, channelName, token || null, myUserId);
+
+      // Create audio & video tracks with native AI noise suppression
+      const audioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+        encoderConfig: "speech_standard",
+        AEC: true,
+        ANS: true,
+        AGC: true,
       });
+      localAudioTrackRef.current = audioTrack;
 
-      localStreamRef.current = stream;
-      setLocalStream(stream);
+      const mediaTracks: (IMicrophoneAudioTrack | ICameraVideoTrack)[] = [audioTrack];
+      const localMediaTracks: MediaStreamTrack[] = [audioTrack.getMediaStreamTrack()];
 
-      const pc = createPeerConnection(remoteUserId, conversationId);
-      stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+      if (type === "VIDEO") {
+        const videoTrack = await AgoraRTC.createCameraVideoTrack();
+        localVideoTrackRef.current = videoTrack;
+        mediaTracks.push(videoTrack);
+        localMediaTracks.push(videoTrack.getMediaStreamTrack());
+      }
 
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      setLocalStream(new MediaStream(localMediaTracks));
+
+      // Publish tracks to Agora network
+      await client.publish(mediaTracks);
 
       setActiveCall({
         conversationId,
@@ -272,27 +310,28 @@ export function useCallManager(myUserId: number | null) {
 
       ringtoneStopRef.current = startRingtone();
 
-      // 30s no-answer timeout
       timeoutRef.current = setTimeout(() => {
         alert("No answer.");
         hangup();
       }, 30000);
 
+      // Notify recipient via WebSocket so their phone/browser rings
       await publish(Topics.userQueue(remoteUserId), {
         type: "OFFER",
         fromUserId: myUserId,
         fromUserName: myUserName ?? "User",
         toUserId: remoteUserId,
         conversationId,
-        sdp: offer.sdp,
+        sdp: channelName, // pass channelName in sdp field for compatibility
         callType: type,
       } satisfies CallSignal);
+
     } catch (err) {
-      console.error("Failed to initiate call:", err);
-      alert("Could not access camera/microphone.");
+      console.error("Failed to initiate call with Agora:", err);
+      alert("Could not access camera/microphone or connect to Agora.");
       hangup();
     }
-  }, [myUserId, myUserName, createPeerConnection, hangup]);
+  }, [myUserId, myUserName, setupAgoraClient, hangup]);
 
   // Accept incoming call
   const acceptCall = useCallback(async (signal: CallSignal, callType: CallType) => {
@@ -304,24 +343,42 @@ export function useCallManager(myUserId: number | null) {
       timeoutRef.current = null;
     }
 
+    const channelName = signal.sdp || `call_conv_${signal.conversationId}`;
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: callType === "VIDEO",
+      const AgoraRTC = await getAgoraRTC();
+      if (!AgoraRTC) return;
+
+      const { appId, token } = await apiGet<AgoraTokenResponse>(
+        `/api/agora/token?channelName=${encodeURIComponent(channelName)}&uid=${myUserId}`
+      );
+
+      const effectiveAppId = appId || process.env.NEXT_PUBLIC_AGORA_APP_ID || "";
+      const client = await setupAgoraClient(signal.fromUserId);
+      if (!client) return;
+
+      await client.join(effectiveAppId, channelName, token || null, myUserId);
+
+      const audioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+        encoderConfig: "speech_standard",
+        AEC: true,
+        ANS: true,
+        AGC: true,
       });
+      localAudioTrackRef.current = audioTrack;
 
-      localStreamRef.current = stream;
-      setLocalStream(stream);
+      const mediaTracks: (IMicrophoneAudioTrack | ICameraVideoTrack)[] = [audioTrack];
+      const localMediaTracks: MediaStreamTrack[] = [audioTrack.getMediaStreamTrack()];
 
-      const pc = createPeerConnection(signal.fromUserId, signal.conversationId);
-      stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-
-      if (signal.sdp) {
-        await pc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: signal.sdp }));
+      if (callType === "VIDEO") {
+        const videoTrack = await AgoraRTC.createCameraVideoTrack();
+        localVideoTrackRef.current = videoTrack;
+        mediaTracks.push(videoTrack);
+        localMediaTracks.push(videoTrack.getMediaStreamTrack());
       }
 
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
+      setLocalStream(new MediaStream(localMediaTracks));
+      await client.publish(mediaTracks);
 
       setActiveCall({
         conversationId: signal.conversationId,
@@ -340,13 +397,14 @@ export function useCallManager(myUserId: number | null) {
         fromUserName: myUserName ?? "User",
         toUserId: signal.fromUserId,
         conversationId: signal.conversationId,
-        sdp: answer.sdp,
+        sdp: channelName,
       } satisfies CallSignal);
+
     } catch (err) {
-      console.error("Failed to accept call:", err);
+      console.error("Failed to accept call with Agora:", err);
       hangup();
     }
-  }, [myUserId, myUserName, createPeerConnection, hangup, stopRingtone]);
+  }, [myUserId, myUserName, setupAgoraClient, hangup, stopRingtone]);
 
   // Reject incoming call
   const rejectCall = useCallback((signal: CallSignal) => {
@@ -370,25 +428,21 @@ export function useCallManager(myUserId: number | null) {
 
   // Toggle Mute
   const toggleMute = useCallback(() => {
-    if (localStreamRef.current) {
-      const audioTrack = localStreamRef.current.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        setIsMuted(!audioTrack.enabled);
-      }
+    if (localAudioTrackRef.current) {
+      const nextMuted = !isMuted;
+      localAudioTrackRef.current.setEnabled(!nextMuted);
+      setIsMuted(nextMuted);
     }
-  }, []);
+  }, [isMuted]);
 
   // Toggle Camera
   const toggleCamera = useCallback(() => {
-    if (localStreamRef.current) {
-      const videoTrack = localStreamRef.current.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        setIsCamOff(!videoTrack.enabled);
-      }
+    if (localVideoTrackRef.current) {
+      const nextCamOff = !isCamOff;
+      localVideoTrackRef.current.setEnabled(!nextCamOff);
+      setIsCamOff(nextCamOff);
     }
-  }, []);
+  }, [isCamOff]);
 
   return {
     activeCall,

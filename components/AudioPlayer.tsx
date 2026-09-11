@@ -12,6 +12,16 @@ interface AudioPlayerProps {
 const NUM_BARS = 40;
 const SPEEDS = [1, 1.5, 2] as const;
 
+// Joins a base URL and a path without producing a double slash ("http://host//path")
+// or a missing slash ("http://hostpath") — both of which cause 404s.
+function buildAudioUrl(src: string): string {
+  if (src.startsWith("http")) return src;
+
+  const base = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080").replace(/\/+$/, "");
+  const path = src.startsWith("/") ? src : `/${src}`;
+  return `${base}${path}`;
+}
+
 export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const animFrameRef = useRef<number>(0);
@@ -23,46 +33,95 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
   const [duration, setDuration] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [errorDetail, setErrorDetail] = useState<string>("");
   const [speedIdx, setSpeedIdx] = useState(0);
 
   // Fetch audio with auth token, decode waveform, create blob URL
   const loadAudio = useCallback(async () => {
     setLoading(true);
     setError(false);
+    setErrorDetail("");
+
+    // Clean up any previous blob URL / audio element before loading a new one
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = "";
+    }
 
     try {
+      if (!src) {
+        throw new Error("No audio src provided");
+      }
+
       const token = getToken();
-      const fullUrl = src.startsWith("http") ? src : `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080"}${src}`;
+      const fullUrl = buildAudioUrl(src);
+
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.log("AudioPlayer fetching:", fullUrl);
+      }
 
       const response = await fetch(fullUrl, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
 
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} for ${fullUrl}`);
+      }
 
       const arrayBuffer = await response.arrayBuffer();
 
-      // Create blob URL for <audio> playback
-      const blob = new Blob([arrayBuffer], { type: response.headers.get("content-type") || "audio/webm" });
+      if (arrayBuffer.byteLength === 0) {
+        throw new Error(`Empty response body for ${fullUrl}`);
+      }
+
+      // Detect true container format from magic bytes (OggS vs EBML/WebM) to prevent FFmpeg demuxer errors
+      const headerBytes = new Uint8Array(arrayBuffer.slice(0, 4));
+      let detectedType = "";
+      if (headerBytes[0] === 0x4f && headerBytes[1] === 0x67 && headerBytes[2] === 0x67 && headerBytes[3] === 0x53) {
+        detectedType = "audio/ogg";
+      } else if (headerBytes[0] === 0x1a && headerBytes[1] === 0x45 && headerBytes[2] === 0xdf && headerBytes[3] === 0xa3) {
+        detectedType = "audio/webm";
+      } else {
+        const rawContentType = response.headers.get("content-type") || "";
+        detectedType = rawContentType.split(";")[0].trim() || "audio/webm";
+      }
+
+      const blob = new Blob([arrayBuffer], { type: detectedType });
       const blobUrl = URL.createObjectURL(blob);
       blobUrlRef.current = blobUrl;
 
-      // Create audio element
+      // Create audio element — plays blob URL directly for natural sound
       const audio = new Audio(blobUrl);
       audioRef.current = audio;
 
       audio.addEventListener("loadedmetadata", () => {
-        setDuration(audio.duration || 0);
+        if (isFinite(audio.duration)) setDuration(audio.duration);
+      });
+      audio.addEventListener("durationchange", () => {
+        if (isFinite(audio.duration)) setDuration(audio.duration);
       });
       audio.addEventListener("ended", () => {
         setIsPlaying(false);
-        setProgress(0);
+        setProgress(100);
+      });
+      audio.addEventListener("error", () => {
+        console.warn("AudioPlayer: <audio> element error", audio.error?.message || "Playback error");
+        setError(true);
+        setErrorDetail("Playback error");
       });
 
-      // Decode waveform peaks
+      // Decode waveform peaks and exact duration
       try {
         const audioCtx = new AudioContext();
         const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+        if (decoded.duration && isFinite(decoded.duration)) {
+          setDuration(decoded.duration);
+        }
         const channelData = decoded.getChannelData(0);
         const blockSize = Math.floor(channelData.length / NUM_BARS);
         const waveformPeaks: number[] = [];
@@ -73,7 +132,7 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
           for (let j = start; j < start + blockSize && j < channelData.length; j++) {
             sum += Math.abs(channelData[j]);
           }
-          waveformPeaks.push(sum / blockSize);
+          waveformPeaks.push(blockSize > 0 ? sum / blockSize : 0);
         }
 
         // Normalize to 0.15 - 1.0 range
@@ -87,8 +146,10 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
 
       setLoading(false);
     } catch (err) {
-      console.error("AudioPlayer: failed to load", err);
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("AudioPlayer: failed to load", message);
       setError(true);
+      setErrorDetail(message);
       setLoading(false);
     }
   }, [src]);
@@ -134,7 +195,15 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
       audioRef.current.pause();
       setIsPlaying(false);
     } else {
-      audioRef.current.play().catch(console.error);
+      if (audioRef.current.ended || progress >= 99) {
+        audioRef.current.currentTime = 0;
+        setProgress(0);
+      }
+      audioRef.current.play().catch((err) => {
+        console.error("AudioPlayer: play() failed", err);
+        setError(true);
+        setErrorDetail("Playback blocked or failed");
+      });
       setIsPlaying(true);
     }
   };
@@ -155,7 +224,7 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
   };
 
   const formatTime = (secs: number) => {
-    if (isNaN(secs) || secs <= 0) return "0:00";
+    if (isNaN(secs) || !isFinite(secs) || secs <= 0) return "0:00";
     const mins = Math.floor(secs / 60);
     const remainder = Math.floor(secs % 60);
     return `${mins}:${remainder.toString().padStart(2, "0")}`;
@@ -172,7 +241,9 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
         <button type="button" className="ap2-play-btn ap2-play-btn--err" onClick={loadAudio} title="Retry">
           <AlertCircle size={16} />
         </button>
-        <span className="ap2-err-text">Failed to load</span>
+        <span className="ap2-err-text" title={errorDetail}>
+          Failed to load{errorDetail.includes("404") ? " (not found)" : ""}
+        </span>
         <style>{styles}</style>
       </div>
     );

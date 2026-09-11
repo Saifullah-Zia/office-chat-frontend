@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
-  Phone, Video, Send, Paperclip, Mic, X, Loader2, Users, Search, Smile, Info, CornerDownRight,
+  Phone, Video, Send, Paperclip, Mic, X, Loader2, Users, Search, Smile, Info, CornerDownRight, Vote, Pin, ChevronRight,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { apiGet, apiPost, apiPostForm } from "@/lib/api";
@@ -16,6 +16,7 @@ import VoiceRecorder from "./VoiceRecorder";
 import Avatar from "./Avatar";
 import EmojiPicker from "./EmojiPicker";
 import ChatInfoDrawer from "./ChatInfoDrawer";
+import CreatePollModal from "./CreatePollModal";
 import { useCallContext } from "@/context/CallContext";
 import { playMessageChime } from "@/lib/sound";
 
@@ -83,6 +84,12 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isPollModalOpen, setIsPollModalOpen] = useState(false);
+  const [pinnedIndex, setPinnedIndex] = useState(0);
+
+  const userRole = useStore((s) => s.userRole);
+  const isReadOnly = (activeConv?.onlyAdminsCanPost || activeConv?.isAnnouncement) && userRole !== "ADMIN";
+  const pinnedMessages = useMemo(() => messages.filter((m) => m.pinned), [messages]);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -155,13 +162,16 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
           const msg: MessageResponse = JSON.parse(frame.body);
           addMessage(msg);
           if (msg.senderId !== userId) {
-            playMessageChime();
-            if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted" && !document.hasFocus()) {
-              try {
-                new Notification(msg.senderName, {
-                  body: msg.content || "Sent an attachment",
-                });
-              } catch {}
+            const isMuted = activeConv?.mutedUntil && new Date(activeConv.mutedUntil).getTime() > Date.now();
+            if (!isMuted) {
+              playMessageChime();
+              if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted" && !document.hasFocus()) {
+                try {
+                  new Notification(msg.senderName, {
+                    body: msg.content || "Sent an attachment",
+                  });
+                } catch {}
+              }
             }
           }
         });
@@ -417,6 +427,29 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
           </div>
         )}
 
+        {/* Pinned Messages Banner */}
+        {pinnedMessages.length > 0 && (
+          <div className="cw-pinned-banner">
+            <Pin size={15} className="cw-pinned-icon" />
+            <div className="cw-pinned-content">
+              <span className="cw-pinned-title">Pinned Message</span>
+              <span className="cw-pinned-text">
+                {pinnedMessages[pinnedIndex % pinnedMessages.length].senderName}:{" "}
+                {pinnedMessages[pinnedIndex % pinnedMessages.length].content || "Attachment"}
+              </span>
+            </div>
+            {pinnedMessages.length > 1 && (
+              <button
+                type="button"
+                className="cw-pinned-next"
+                onClick={() => setPinnedIndex((prev) => (prev + 1) % pinnedMessages.length)}
+              >
+                {pinnedMessages.length} pinned <ChevronRight size={14} />
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Message History Area */}
         <div className="cw-body">
           {isLoading ? (
@@ -517,7 +550,11 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
             </div>
           )}
 
-          {isRecordingVoice ? (
+          {isReadOnly ? (
+            <div className="cw-readonly-bar">
+              🔒 Only administrators can send messages in this channel
+            </div>
+          ) : isRecordingVoice ? (
             <VoiceRecorder
               conversationId={conversationId}
               onSendVoiceMessage={handleSendVoiceMessage}
@@ -543,6 +580,15 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                 title="Attach File"
               >
                 <Paperclip size={20} />
+              </button>
+
+              <button
+                type="button"
+                className="cw-input-btn"
+                onClick={() => setIsPollModalOpen(true)}
+                title="Create Poll"
+              >
+                <Vote size={20} />
               </button>
 
               <div className="cw-input-wrapper">
@@ -649,7 +695,26 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
           flex: 1; border: none; background: none; font-size: 0.84375rem; color: var(--text-primary); outline: none;
         }
         .cw-search-count { font-size: 0.75rem; color: var(--text-muted); font-weight: 600; }
-        .cw-search-subclose { background: none; border: none; color: var(--text-faint); cursor: pointer; padding: 0.25rem; }
+        .cw-search-subclose { background: none; border: none; color: var(--text-muted); cursor: pointer; display: flex; }
+
+        .cw-pinned-banner {
+          display: flex; align-items: center; gap: 0.75rem;
+          padding: 0.5rem 1.25rem; background: var(--surface-card);
+          border-bottom: 1px solid var(--border); z-index: 5;
+        }
+        .cw-pinned-icon { color: var(--accent); flex-shrink: 0; }
+        .cw-pinned-content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+        .cw-pinned-title { font-size: 0.6875rem; font-weight: 700; color: var(--accent); text-transform: uppercase; }
+        .cw-pinned-text {
+          font-size: 0.8125rem; color: var(--text-primary); font-weight: 500;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .cw-pinned-next {
+          background: var(--bg-secondary); border: 1px solid var(--border);
+          color: var(--text-muted); padding: 0.25rem 0.6rem; border-radius: 999px;
+          font-size: 0.72rem; font-weight: 600; cursor: pointer;
+          display: flex; align-items: center; gap: 0.25rem;
+        }
         .cw-search-subclose:hover { color: var(--text-primary); }
 
         .cw-body {
@@ -706,9 +771,17 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
         @keyframes typingPulse { from { opacity: 0.3; } to { opacity: 1; } }
 
         .cw-input-area {
-          padding: 1rem 1.5rem; background: var(--bg-primary);
-          border-top: 1px solid var(--border); display: flex;
-          flex-direction: column; gap: 0.5rem; flex-shrink: 0;
+          padding: 1rem 1.25rem; background: var(--surface-card);
+          border-top: 1px solid var(--border);
+          display: flex; flex-direction: column; gap: 0.75rem;
+          position: relative;
+        }
+
+        .cw-readonly-bar {
+          padding: 0.85rem; background: var(--bg-secondary);
+          border: 1px solid var(--border); border-radius: 12px;
+          text-align: center; font-size: 0.875rem; color: var(--text-muted);
+          font-weight: 500;
         }
         .cw-reply-pill {
           display: flex; align-items: center; gap: 0.625rem;
@@ -749,6 +822,13 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
         .spin { animation: spin 0.7s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
       `}</style>
+      
+      <CreatePollModal
+        isOpen={isPollModalOpen}
+        onClose={() => setIsPollModalOpen(false)}
+        conversationId={conversationId!}
+        onPollCreated={(msg) => addMessage(msg)}
+      />
     </div>
   );
 }

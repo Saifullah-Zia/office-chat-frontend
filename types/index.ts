@@ -51,10 +51,30 @@ export interface ConversationResponse {
   unreadCount: number;
   lastMessagePreview?: string;
   lastMessageAt?: string;
+  onlyAdminsCanPost?: boolean;
+  isAnnouncement?: boolean;
+  mutedUntil?: string | null;
   members: MemberResponse[];
 }
 
-export type MessageType = "TEXT" | "IMAGE" | "FILE" | "VOICE" | "AUDIO";
+export type MessageType = "TEXT" | "IMAGE" | "FILE" | "VOICE" | "AUDIO" | "POLL";
+
+export interface PollOptionResponse {
+  id: number;
+  optionText: string;
+  voteCount: number;
+  votedByMe: boolean;
+  voterNames: string[];
+}
+
+export interface PollResponse {
+  id: number;
+  messageId: number;
+  question: string;
+  multipleAnswers: boolean;
+  totalVotes: number;
+  options: PollOptionResponse[];
+}
 
 export interface AttachmentResponse {
   id: number;
@@ -87,9 +107,11 @@ export interface MessageResponse {
   editedAt?: string;
   edited?: boolean;
   deleted?: boolean;
+  pinned?: boolean;
   attachments: AttachmentResponse[];
   reactions?: Record<string, number>;
   reactionDetails?: ReactionDetailResponse[];
+  poll?: PollResponse;
   read: boolean;
   delivered: boolean;
 }

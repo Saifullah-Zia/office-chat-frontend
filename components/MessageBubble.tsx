@@ -3,8 +3,9 @@
 import { useState } from "react";
 import { MessageResponse, AttachmentResponse } from "@/types";
 import AudioPlayer from "./AudioPlayer";
+import PollCard from "./PollCard";
 import Avatar from "./Avatar";
-import { FileText, Download, Check, CheckCheck, Copy, Reply, Edit2, Trash2, Check as CheckIcon, X as XIcon, X } from "lucide-react";
+import { FileText, Download, Check, CheckCheck, Copy, Reply, Edit2, Trash2, Check as CheckIcon, X as XIcon, X, Pin } from "lucide-react";
 import { apiPost, apiPut, apiDelete } from "@/lib/api";
 import { useStore } from "@/lib/store";
 
@@ -103,13 +104,22 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
       (a.filename ?? a.fileName ?? "").endsWith(".webm") ||
       (a.filename ?? a.fileName ?? "").endsWith(".mp3"),
   );
-  const isVoiceMessage =
-    !isDeleted && (message.type === "VOICE" || message.type === "AUDIO" || !!audioAttachment);
+
+  // Only treat this as a playable voice message if we actually have a real
+  // audio attachment. `message.type === "AUDIO"`/`"VOICE"` alone is not
+  // enough — some messages are tagged that way without a file (bad seed
+  // data, a failed upload, etc), and previously we fell back to
+  // `message.content` as the audio URL in that case, which sent garbage
+  // text (e.g. "Testing type AUDIO") to the audio endpoint as if it were a
+  // real path, causing 404/500s.
+  const isVoiceMessage = !isDeleted && !!audioAttachment;
+  const isTaggedAudioWithoutFile =
+    !isDeleted && !audioAttachment && (message.type === "VOICE" || message.type === "AUDIO");
   const audioSrc = audioAttachment
     ? audioAttachment.downloadUrl.startsWith("http")
       ? audioAttachment.downloadUrl
       : `${API_BASE}${audioAttachment.downloadUrl}`
-    : message.content;
+    : undefined;
 
   const isRead = message.read ?? false;
   const isDelivered = message.delivered ?? false;
@@ -119,11 +129,37 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
     activeEmojiTab === "ALL" ? true : r.emoji === activeEmojiTab
   );
 
+  const handleTogglePin = async () => {
+    try {
+      await apiPost(`/api/conversations/${message.conversationId}/messages/${message.id}/pin`);
+    } catch (err) {
+      console.error("Failed to toggle pin:", err);
+    }
+  };
+
   return (
-    <div className={`mb-row ${isMine ? "mb-row--mine" : "mb-row--theirs"}`}>
-      <div className="mb-container">
+    <div
+      className={`mb-container ${isMine ? "mb-container--mine" : "mb-container--theirs"}`}
+    >
+      {/* Sender Avatar — always shown for others' messages */}
+      {!isMine && (
+        <div className="mb-avatar-wrapper">
+          <Avatar name={message.senderName} size={30} />
+        </div>
+      )}
+
+      {/* Bubble Wrapper */}
+      <div className="mb-wrapper">
+        {/* Sender Name */}
         {!isMine && (
           <span className="mb-sender-name">{message.senderName}</span>
+        )}
+
+        {/* Pinned Badge */}
+        {message.pinned && (
+          <div className="mb-pinned-badge">
+            <Pin size={11} /> Pinned Message
+          </div>
         )}
 
         {/* Hover Action Bar */}
@@ -160,6 +196,14 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
                 <Reply size={13} />
               </button>
             )}
+            <button
+              type="button"
+              className={`mb-action-btn ${message.pinned ? "mb-action-btn--pinned" : ""}`}
+              onClick={handleTogglePin}
+              title={message.pinned ? "Unpin message" : "Pin message"}
+            >
+              <Pin size={13} />
+            </button>
             {isMine && !isVoiceMessage && (
               <button
                 type="button"
@@ -227,6 +271,17 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
           </div>
         ) : isVoiceMessage && audioSrc ? (
           <AudioPlayer src={audioSrc} isMine={isMine} />
+        ) : isTaggedAudioWithoutFile ? (
+          /* Message is tagged AUDIO/VOICE but has no real attachment — show
+             a placeholder instead of trying to play message.content as a
+             file (that was the source of the "/Testing type AUDIO" 404/500). */
+          <div className={`mb-bubble ${isMine ? "mb-bubble--mine" : "mb-bubble--theirs"}`}>
+            <p className="mb-text" style={{ opacity: 0.7, fontStyle: "italic" }}>
+              🎤 Voice message unavailable
+            </p>
+          </div>
+        ) : message.type === "POLL" && message.poll ? (
+          <PollCard poll={message.poll} isMine={isMine} />
         ) : (
           <>
             {message.content && message.content.trim().length > 0 && (
@@ -420,8 +475,15 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
           border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center;
           transition: color 0.1s, background 0.1s, transform 0.1s;
         }
-        .mb-action-btn:hover { color: var(--accent); background: var(--accent-muted); transform: scale(1.15); }
-        .mb-action-btn--delete:hover { color: var(--danger); background: var(--danger-soft); }
+        .mb-action-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+        .mb-action-btn--pinned { color: var(--accent); background: var(--accent-soft); }
+        .mb-action-btn--delete:hover { background: var(--danger-soft); color: var(--danger); }
+        .mb-pinned-badge {
+          display: inline-flex; align-items: center; gap: 0.25rem;
+          font-size: 0.6875rem; font-weight: 700; color: var(--accent);
+          background: var(--accent-soft); padding: 0.15rem 0.5rem;
+          border-radius: 999px; margin-bottom: 0.25rem; align-self: flex-start;
+        }
         .mb-emoji-btn { font-size: 0.875rem; }
 
         .mb-edit-box {

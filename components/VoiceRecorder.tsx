@@ -16,12 +16,17 @@ const WARNING_SECS = 30;
 const NUM_BARS = 24;
 
 function getSupportedMimeType(): string {
-  if (typeof MediaRecorder === "undefined") return "audio/webm";
-  if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) return "audio/webm;codecs=opus";
-  if (MediaRecorder.isTypeSupported("audio/webm")) return "audio/webm";
-  if (MediaRecorder.isTypeSupported("audio/mp4")) return "audio/mp4";
-  if (MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) return "audio/ogg;codecs=opus";
-  return "audio/webm";
+  if (typeof MediaRecorder === "undefined") return "";
+  const isFirefox = typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("firefox");
+  const candidates = isFirefox
+    ? ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/ogg", "audio/webm"]
+    : ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm", "audio/mp4"];
+
+  for (const type of candidates) {
+    if (MediaRecorder.isTypeSupported(type)) return type;
+  }
+  console.warn("[VoiceRecorder] No explicit Opus container supported by MediaRecorder; falling back to default browser mimeType.");
+  return "";
 }
 
 function getFileExtension(mimeType: string): string {
@@ -46,6 +51,7 @@ export default function VoiceRecorder({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number>(0);
   const mimeTypeRef = useRef<string>("audio/webm");
+  const stoppingRef = useRef(false); // guard against double-stop (send/timeout)
 
   const togglePause = () => {
     if (!mediaRecorderRef.current) return;
@@ -82,69 +88,176 @@ export default function VoiceRecorder({
   }, []);
 
   useEffect(() => {
+    // ── StrictMode guard ──
+    // React 18 dev-mode StrictMode intentionally mounts effects twice
+    // (run → cleanup → run) to surface bugs like this one. Because
+    // getUserMedia() is async, the first run's cleanup can fire BEFORE
+    // its stream promise resolves, so `stream` is still null and never
+    // gets stopped — leaving a live mic stream + MediaRecorder running
+    // in the background while a second one starts on top of it. Both
+    // recorders then push chunks into the same shared array, producing
+    // a malformed, doubled/echoey/mistimed recording.
+    //
+    // `cancelled` closes that race: if cleanup already ran by the time
+    // getUserMedia() resolves, we kill the stream immediately instead
+    // of continuing setup.
+    let cancelled = false;
     let stream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
+    let recorder: MediaRecorder | null = null;
 
     (async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        // ── Clean natural mic capture ──
+        // Native sample rate (no explicit sampleRate constraint) prevents
+        // pitch stretching / slow playback. autoGainControl: false avoids
+        // hollow volume pumping.
+        const s = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: true,
+            autoGainControl: false,
           },
         });
 
-        // Set up AnalyserNode for live waveform
-        audioCtx = new AudioContext();
+        // If this effect instance was already cleaned up (StrictMode's
+        // first pass) before getUserMedia resolved, discard this stream
+        // entirely and do not set up a recorder.
+        if (cancelled) {
+          s.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        stream = s;
+
+        // Log and verify applied track settings
+        const track = stream.getAudioTracks()[0];
+        if (track) {
+          console.log("[VoiceRecorder] Applied track settings:", track.getSettings());
+        }
+
+        // ── Side-chain analyser for waveform visualization only ──
+        // (source -> analyser only; never connected to audioCtx.destination,
+        // so this cannot cause live mic-to-speaker echo)
+        const trackSampleRate = track?.getSettings().sampleRate;
+        audioCtx = trackSampleRate ? new AudioContext({ sampleRate: trackSampleRate }) : new AudioContext();
         const source = audioCtx.createMediaStreamSource(stream);
         const analyser = audioCtx.createAnalyser();
         analyser.fftSize = 256;
         source.connect(analyser);
         analyserRef.current = analyser;
 
-        // Detect best supported format
-        mimeTypeRef.current = getSupportedMimeType();
+        // Detect best supported container
+        const preferredMime = getSupportedMimeType();
+        const recorderOptions: MediaRecorderOptions = {};
+        if (preferredMime) {
+          recorderOptions.mimeType = preferredMime;
+        }
 
-        const recorder = new MediaRecorder(stream, { mimeType: mimeTypeRef.current });
+        recorder = new MediaRecorder(stream, recorderOptions);
         mediaRecorderRef.current = recorder;
         chunksRef.current = [];
+
+        // Store actual instantiated recorder mimeType for accurate file extension & Content-Type
+        mimeTypeRef.current = recorder.mimeType || preferredMime || "audio/webm";
+        console.log("[VoiceRecorder] Actual recorder mimeType:", mimeTypeRef.current);
 
         recorder.ondataavailable = (e) => {
           if (e.data.size > 0) chunksRef.current.push(e.data);
         };
 
-        recorder.start(100);
+        // ── onstop set ONCE during init to avoid race conditions ──
+        recorder.onstop = async () => {
+          try {
+            const rawMime = mimeTypeRef.current;
+            const cleanMime = rawMime.split(";")[0].trim() || "audio/webm";
+            const ext = getFileExtension(cleanMime);
+            const audioBlob = new Blob(chunksRef.current, { type: cleanMime });
 
-        // Start timer
-        timerRef.current = setInterval(() => {
-          setSeconds((s) => {
-            if (s + 1 >= MAX_DURATION_SECS) {
-              // Auto-stop at max duration
-              handleStopAndSendInternal();
-              return s + 1;
+            // Skip empty recordings (user cancelled instantly)
+            if (audioBlob.size < 100) {
+              setIsUploading(false);
+              onCancel();
+              return;
             }
-            return s + 1;
-          });
-        }, 1000);
+
+            const file = new File([audioBlob], `voice_note_${Date.now()}.${ext}`, {
+              type: cleanMime,
+            });
+
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("conversationId", conversationId.toString());
+
+            const att = await apiPostForm<AttachmentResponse>("/api/files/upload", formData);
+
+            await onSendVoiceMessage({
+              conversationId,
+              content: "",
+              type: "VOICE",
+              attachmentId: att.id,
+            });
+
+            onCancel();
+          } catch (err) {
+            console.error("Failed to send voice message:", err);
+            alert("Failed to send voice message.");
+          } finally {
+            setIsUploading(false);
+          }
+        };
+
+        recorder.start(250);
+
+        // Start timer based on exact wall-clock timestamp (prevents skipping 1,2,4,6)
+        const startTime = Date.now();
+        if (timerRef.current) clearInterval(timerRef.current);
+        timerRef.current = setInterval(() => {
+          const elapsed = Math.floor((Date.now() - startTime) / 1000);
+          setSeconds(elapsed);
+          if (elapsed >= MAX_DURATION_SECS) {
+            handleStopAndSendInternal();
+          }
+        }, 250);
 
         // Start live waveform animation
         animFrameRef.current = requestAnimationFrame(animateBars);
       } catch (err) {
-        console.error("Microphone access failed:", err);
-        alert("Microphone access denied or unavailable.");
-        onCancel();
+        if (!cancelled) {
+          console.error("Microphone access failed:", err);
+          alert("Microphone access denied or unavailable.");
+          onCancel();
+        }
       }
     })();
 
     return () => {
+      cancelled = true; // ← marks this effect instance dead; the core fix
+
       if (timerRef.current) clearInterval(timerRef.current);
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        // Detach handlers before stopping so a stray onstop from a
+        // cleaned-up instance can never fire and upload a stale/empty blob.
+        mediaRecorderRef.current.ondataavailable = null;
+        mediaRecorderRef.current.onstop = null;
         mediaRecorderRef.current.stop();
       }
+      mediaRecorderRef.current = null;
+
+      // Also guard the locally-scoped recorder var directly, in case
+      // getUserMedia resolved after `cancelled` was set but this
+      // particular closure's recorder was still created (defensive;
+      // in practice the `if (cancelled) return;` above prevents this).
+      if (recorder && recorder.state !== "inactive") {
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
+        recorder.stop();
+      }
+
       stream?.getTracks().forEach((t) => t.stop());
       audioCtx?.close();
+      analyserRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -159,44 +272,22 @@ export default function VoiceRecorder({
   const isNearLimit = remaining <= WARNING_SECS && remaining > 0;
 
   const handleStopAndSendInternal = async () => {
+    // Guard: prevent double-fire from timer + button
+    if (stoppingRef.current) return;
     if (!mediaRecorderRef.current || mediaRecorderRef.current.state === "inactive") return;
+    stoppingRef.current = true;
     setIsUploading(true);
 
-    // Stop animation
+    // Stop animation & timer
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     if (timerRef.current) clearInterval(timerRef.current);
 
-    mediaRecorderRef.current.onstop = async () => {
-      try {
-        const mime = mimeTypeRef.current;
-        const ext = getFileExtension(mime);
-        const audioBlob = new Blob(chunksRef.current, { type: mime });
-        const file = new File([audioBlob], `voice_note_${Date.now()}.${ext}`, {
-          type: mime,
-        });
-
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("conversationId", conversationId.toString());
-
-        const att = await apiPostForm<AttachmentResponse>("/api/files/upload", formData);
-
-        await onSendVoiceMessage({
-          conversationId,
-          content: "",
-          type: "VOICE",
-          attachmentId: att.id,
-        });
-
-        onCancel();
-      } catch (err) {
-        console.error("Failed to send voice message:", err);
-        alert("Failed to send voice message.");
-      } finally {
-        setIsUploading(false);
-      }
-    };
-
+    // Flush any buffered data, then stop
+    try {
+      mediaRecorderRef.current.requestData();
+    } catch {
+      // requestData may throw if already stopped — safe to ignore
+    }
     mediaRecorderRef.current.stop();
   };
 

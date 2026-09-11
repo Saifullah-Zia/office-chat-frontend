@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { X, Users, Mail, Building, FileText, Download, UserPlus, UserMinus, ShieldCheck } from "lucide-react";
+import { X, Users, Mail, Building, FileText, Download, UserPlus, UserMinus, ShieldCheck, Bell, BellOff, Lock, Volume2 } from "lucide-react";
 import { ConversationResponse, MemberResponse, AttachmentResponse, UserResponse } from "@/types";
 import Avatar from "./Avatar";
 import { useStore } from "@/lib/store";
-import { apiPost, apiDelete } from "@/lib/api";
+import { apiPost, apiPut, apiDelete } from "@/lib/api";
 
 interface ChatInfoDrawerProps {
   isOpen: boolean;
@@ -94,6 +94,28 @@ export default function ChatInfoDrawer({
     }
   };
 
+  const handleMute = async (durationHours: number) => {
+    try {
+      const updated = await apiPost<ConversationResponse>(`/api/conversations/${conversation.id}/mute`, { durationHours });
+      upsertConversation(updated);
+    } catch (err) {
+      console.error("Failed to mute conversation:", err);
+    }
+  };
+
+  const handleTogglePermissions = async (onlyAdmins: boolean, isAnnounce: boolean) => {
+    try {
+      const updated = await apiPut<ConversationResponse>(`/api/conversations/${conversation.id}/permissions`, {
+        onlyAdminsCanPost: onlyAdmins,
+        isAnnouncement: isAnnounce,
+      });
+      upsertConversation(updated);
+    } catch (err) {
+      console.error("Failed to update permissions:", err);
+      alert("Failed to update group settings.");
+    }
+  };
+
   return (
     <aside className="cid-drawer">
       <header className="cid-header">
@@ -118,6 +140,75 @@ export default function ChatInfoDrawer({
             {isGroup ? `${conversation.members.length} members` : otherMember?.role ?? "User"}
           </span>
         </div>
+
+        {/* Notifications & Mute Section */}
+        <div className="cid-section">
+          <h4 className="cid-section-title">Notifications</h4>
+          {conversation.mutedUntil && new Date(conversation.mutedUntil).getTime() > Date.now() ? (
+            <div className="cid-muted-banner">
+              <BellOff size={16} />
+              <span>Notifications muted</span>
+              <button type="button" className="cid-unmute-btn" onClick={() => handleMute(0)}>
+                Unmute
+              </button>
+            </div>
+          ) : (
+            <div className="cid-mute-options">
+              <span className="cid-mute-label">Mute notifications for:</span>
+              <div className="cid-mute-btns">
+                <button type="button" className="cid-mute-chip" onClick={() => handleMute(8)}>
+                  8 Hours
+                </button>
+                <button type="button" className="cid-mute-chip" onClick={() => handleMute(168)}>
+                  1 Week
+                </button>
+                <button type="button" className="cid-mute-chip" onClick={() => handleMute(99999)}>
+                  Always
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Group Admin Permissions */}
+        {isGroup && isAdmin && (
+          <div className="cid-section">
+            <h4 className="cid-section-title">Group Settings</h4>
+            <div className="cid-toggle-row">
+              <div className="cid-toggle-label">
+                <Lock size={15} />
+                <div>
+                  <span className="cid-toggle-title">Only Admins Can Post</span>
+                  <span className="cid-toggle-sub">Restrict sending messages to group admins</span>
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={conversation.onlyAdminsCanPost ?? false}
+                onChange={(e) =>
+                  handleTogglePermissions(e.target.checked, conversation.isAnnouncement ?? false)
+                }
+              />
+            </div>
+
+            <div className="cid-toggle-row">
+              <div className="cid-toggle-label">
+                <Volume2 size={15} />
+                <div>
+                  <span className="cid-toggle-title">Announcement Channel</span>
+                  <span className="cid-toggle-sub">Broadcast-only mode for announcements</span>
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={conversation.isAnnouncement ?? false}
+                onChange={(e) =>
+                  handleTogglePermissions(conversation.onlyAdminsCanPost ?? false, e.target.checked)
+                }
+              />
+            </div>
+          </div>
+        )}
 
         {/* Direct Chat Info */}
         {!isGroup && otherMember && (
@@ -430,6 +521,33 @@ export default function ChatInfoDrawer({
         .cid-add-icon {
           color: var(--accent);
         }
+
+        .cid-muted-banner {
+          display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+          padding: 0.5rem 0.75rem; background: var(--warning-soft); border: 1px solid var(--warning-border);
+          color: var(--warning); border-radius: 10px; font-size: 0.8125rem; font-weight: 600;
+        }
+        .cid-unmute-btn {
+          background: var(--warning); color: #fff; border: none; padding: 0.25rem 0.6rem;
+          border-radius: 6px; font-size: 0.75rem; cursor: pointer; font-weight: 600;
+        }
+        .cid-mute-options { display: flex; flex-direction: column; gap: 0.4rem; }
+        .cid-mute-label { font-size: 0.75rem; color: var(--text-muted); }
+        .cid-mute-btns { display: flex; gap: 0.4rem; }
+        .cid-mute-chip {
+          flex: 1; padding: 0.35rem; border-radius: 8px; border: 1px solid var(--border);
+          background: var(--bg-secondary); color: var(--text-primary); font-size: 0.75rem;
+          font-weight: 600; cursor: pointer; transition: background 0.15s;
+        }
+        .cid-mute-chip:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+        .cid-toggle-row {
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 0.5rem 0; border-bottom: 1px solid var(--border);
+        }
+        .cid-toggle-label { display: flex; align-items: center; gap: 0.5rem; color: var(--text-primary); }
+        .cid-toggle-title { font-size: 0.8125rem; font-weight: 600; display: block; }
+        .cid-toggle-sub { font-size: 0.7rem; color: var(--text-muted); display: block; }
 
         .cid-info-row {
           display: flex;
