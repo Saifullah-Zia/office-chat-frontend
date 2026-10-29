@@ -5,9 +5,14 @@ import { MessageResponse, AttachmentResponse } from "@/types";
 import AudioPlayer from "./AudioPlayer";
 import PollCard from "./PollCard";
 import Avatar from "./Avatar";
-import { FileText, Download, Check, CheckCheck, Copy, Reply, Edit2, Trash2, Check as CheckIcon, X as XIcon, X, Pin } from "lucide-react";
+import {
+  FileText, Download, Check, CheckCheck, Copy, Reply, Edit2, Trash2,
+  Check as CheckIcon, X as XIcon, X, Pin, Star
+} from "lucide-react";
 import { apiPost, apiPut, apiDelete } from "@/lib/api";
 import { useStore } from "@/lib/store";
+import RichTextRenderer from "./RichTextRenderer";
+import DocViewerModal from "./DocViewerModal";
 
 interface MessageBubbleProps {
   message: MessageResponse;
@@ -34,6 +39,18 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function parseReplyAndContent(rawContent: string): { reply: { sender: string; text: string } | null; text: string } {
+  if (!rawContent) return { reply: null, text: "" };
+  const match = rawContent.match(/^Replying to ([^:]+):\s*"([^"]*?)(?:\.\.\.)?"\s*\n([\s\S]*)$/);
+  if (match) {
+    return {
+      reply: { sender: match[1], text: match[2] },
+      text: match[3],
+    };
+  }
+  return { reply: null, text: rawContent };
+}
+
 export default function MessageBubble({ message, isMine, onReply }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -41,9 +58,15 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
   const [showReactionsModal, setShowReactionsModal] = useState(false);
   const [activeEmojiTab, setActiveEmojiTab] = useState<string>("ALL");
+  const [previewDoc, setPreviewDoc] = useState<{ url: string; name: string; isImage?: boolean; isPdf?: boolean } | null>(null);
 
   const userRole = useStore((s) => s.userRole);
   const currentUserId = useStore((s) => s.userId);
+  const currentUserName = useStore((s) => s.userName);
+  const starredMessageIds = useStore((s) => s.starredMessageIds);
+  const toggleStarMessage = useStore((s) => s.toggleStarMessage);
+
+  const isStarred = starredMessageIds.has(message.id);
   const timeStr = formatTime(message.createdAt);
   const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -102,16 +125,10 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
     (a) =>
       (a.contentType ?? a.mimeType ?? "").startsWith("audio/") ||
       (a.filename ?? a.fileName ?? "").endsWith(".webm") ||
-      (a.filename ?? a.fileName ?? "").endsWith(".mp3"),
+      (a.filename ?? a.fileName ?? "").endsWith(".mp3") ||
+      (a.filename ?? a.fileName ?? "").endsWith(".ogg"),
   );
 
-  // Only treat this as a playable voice message if we actually have a real
-  // audio attachment. `message.type === "AUDIO"`/`"VOICE"` alone is not
-  // enough — some messages are tagged that way without a file (bad seed
-  // data, a failed upload, etc), and previously we fell back to
-  // `message.content` as the audio URL in that case, which sent garbage
-  // text (e.g. "Testing type AUDIO") to the audio endpoint as if it were a
-  // real path, causing 404/500s.
   const isVoiceMessage = !isDeleted && !!audioAttachment;
   const isTaggedAudioWithoutFile =
     !isDeleted && !audioAttachment && (message.type === "VOICE" || message.type === "AUDIO");
@@ -138,10 +155,8 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
   };
 
   return (
-    <div
-      className={`mb-container ${isMine ? "mb-container--mine" : "mb-container--theirs"}`}
-    >
-      {/* Sender Avatar — always shown for others' messages */}
+    <div className={`mb-container ${isMine ? "mb-container--mine" : "mb-container--theirs"}`}>
+      {/* Sender Avatar */}
       {!isMine && (
         <div className="mb-avatar-wrapper">
           <Avatar name={message.senderName} size={30} />
@@ -186,6 +201,14 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
                 <Copy size={13} />
               </button>
             )}
+            <button
+              type="button"
+              className={`mb-action-btn ${isStarred ? "mb-action-btn--starred" : ""}`}
+              onClick={() => toggleStarMessage(message.id)}
+              title={isStarred ? "Unstar message" : "Star message"}
+            >
+              <Star size={13} fill={isStarred ? "currentColor" : "none"} />
+            </button>
             {onReply && (
               <button
                 type="button"
@@ -272,9 +295,6 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
         ) : isVoiceMessage && audioSrc ? (
           <AudioPlayer src={audioSrc} isMine={isMine} />
         ) : isTaggedAudioWithoutFile ? (
-          /* Message is tagged AUDIO/VOICE but has no real attachment — show
-             a placeholder instead of trying to play message.content as a
-             file (that was the source of the "/Testing type AUDIO" 404/500). */
           <div className={`mb-bubble ${isMine ? "mb-bubble--mine" : "mb-bubble--theirs"}`}>
             <p className="mb-text" style={{ opacity: 0.7, fontStyle: "italic" }}>
               🎤 Voice message unavailable
@@ -284,11 +304,20 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
           <PollCard poll={message.poll} isMine={isMine} />
         ) : (
           <>
-            {message.content && message.content.trim().length > 0 && (
-              <div className={`mb-bubble ${isMine ? "mb-bubble--mine" : "mb-bubble--theirs"}`}>
-                <p className="mb-text">{message.content}</p>
-              </div>
-            )}
+            {message.content && message.content.trim().length > 0 && (() => {
+              const parsed = parseReplyAndContent(message.content);
+              return (
+                <div className={`mb-bubble ${isMine ? "mb-bubble--mine" : "mb-bubble--theirs"}`}>
+                  {parsed.reply && (
+                    <div className={`mb-quote ${isMine ? "mb-quote--mine" : "mb-quote--theirs"}`}>
+                      <span className="mb-quote-sender">{parsed.reply.sender}</span>
+                      <span className="mb-quote-text">{parsed.reply.text}</span>
+                    </div>
+                  )}
+                  <RichTextRenderer content={parsed.text} isMine={isMine} currentUserName={currentUserName} />
+                </div>
+              );
+            })()}
           </>
         )}
 
@@ -297,6 +326,7 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
           <div className="mb-attachments">
             {message.attachments.map((att: AttachmentResponse) => {
               const isImage = (att.contentType ?? att.mimeType ?? "").startsWith("image/");
+              const isPdf = (att.filename ?? att.fileName ?? "").toLowerCase().endsWith(".pdf") || (att.contentType ?? "").includes("pdf");
               const downloadUrl = att.downloadUrl.startsWith("http")
                 ? att.downloadUrl
                 : `${API_BASE}${att.downloadUrl}`;
@@ -304,23 +334,23 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
               const bytes = att.size ?? att.fileSize ?? 0;
 
               return isImage ? (
-                <a
+                <div
                   key={att.id}
-                  href={downloadUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
                   className="img-preview-box"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => setPreviewDoc({ url: downloadUrl, name, isImage: true })}
+                  title="Click to view full preview"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={downloadUrl} alt={name} className="img-preview" />
-                </a>
+                </div>
               ) : (
-                <a
+                <div
                   key={att.id}
-                  href={downloadUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
                   className={`file-card ${isMine ? "file-card--mine" : "file-card--theirs"}`}
+                  style={{ cursor: "pointer" }}
+                  onClick={() => setPreviewDoc({ url: downloadUrl, name, isPdf })}
+                  title="Click to preview file"
                 >
                   <div className="file-icon-box">
                     <FileText size={20} />
@@ -329,8 +359,16 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
                     <span className="file-name">{name}</span>
                     <span className="file-size">{formatFileSize(bytes)}</span>
                   </div>
-                  <Download size={16} className="file-dl-icon" />
-                </a>
+                  <a
+                    href={downloadUrl}
+                    download={name}
+                    className="file-dl-link"
+                    onClick={(e) => e.stopPropagation()}
+                    title="Download file directly"
+                  >
+                    <Download size={16} className="file-dl-icon" />
+                  </a>
+                </div>
               );
             })}
           </div>
@@ -371,7 +409,7 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
           </div>
         )}
 
-        {/* WhatsApp Style Reactions Modal */}
+        {/* Reactions Modal */}
         {showReactionsModal && (
           <div className="mb-rm-overlay" onClick={() => setShowReactionsModal(false)}>
             <div className="mb-rm-card" onClick={(e) => e.stopPropagation()}>
@@ -433,6 +471,11 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
         {/* Footer info: time, edited tag, status ticks */}
         <div className={`mb-footer ${isMine ? "mb-footer--mine" : "mb-footer--theirs"}`}>
           {isEdited && !isDeleted && <span className="mb-edited-tag">(edited)</span>}
+          {isStarred && (
+            <span className="mb-starred-tag" title="Starred message">
+              <Star size={10} fill="currentColor" />
+            </span>
+          )}
           <span className="mb-time">{timeStr}</span>
           {isMine && !isDeleted && (
             <span className={`mb-ticks ${isRead ? "mb-ticks--read" : isDelivered ? "mb-ticks--delivered" : ""}`}>
@@ -442,6 +485,16 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
         </div>
       </div>
 
+      {previewDoc && (
+        <DocViewerModal
+          url={previewDoc.url}
+          name={previewDoc.name}
+          isImage={previewDoc.isImage}
+          isPdf={previewDoc.isPdf}
+          onClose={() => setPreviewDoc(null)}
+        />
+      )}
+
       <style>{`
         .mb-row {
           display: flex; width: 100%; margin-bottom: 0.75rem; position: relative;
@@ -450,9 +503,14 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
         .mb-row--theirs { justify-content: flex-start; }
 
         .mb-container {
-          max-width: 70%; display: flex; flex-direction: column; gap: 0.2rem;
-          position: relative;
+          max-width: 70%; display: inline-flex; flex-direction: column; gap: 0.2rem;
+          position: relative; width: auto; min-width: 0;
         }
+        .mb-container--mine { align-self: flex-end; align-items: flex-end; }
+        .mb-container--theirs { align-self: flex-start; align-items: flex-start; }
+
+        .mb-avatar-wrapper { flex-shrink: 0; align-self: flex-end; }
+        .mb-wrapper { display: inline-flex; flex-direction: column; max-width: 100%; }
 
         .mb-action-bar {
           position: absolute;
@@ -477,6 +535,8 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
         }
         .mb-action-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
         .mb-action-btn--pinned { color: var(--accent); background: var(--accent-soft); }
+        .mb-action-btn--starred { color: #eab308; background: #fef9c3; }
+        .mb-starred-tag { color: #eab308; display: inline-flex; align-items: center; }
         .mb-action-btn--delete:hover { background: var(--danger-soft); color: var(--danger); }
         .mb-pinned-badge {
           display: inline-flex; align-items: center; gap: 0.25rem;
@@ -530,6 +590,34 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
         }
         .mb-reaction-info-btn:hover {
           background: var(--bg-tertiary); color: var(--text-primary);
+        }
+
+        /* Quote Card */
+        .mb-quote {
+          display: flex; flex-direction: column; gap: 0.15rem;
+          padding: 0.35rem 0.65rem; border-radius: 8px; margin-bottom: 0.4rem;
+          font-size: 0.78125rem; line-height: 1.35;
+        }
+        .mb-quote--mine {
+          background: rgba(255, 255, 255, 0.18);
+          border-left: 3px solid rgba(255, 255, 255, 0.85);
+          color: rgba(255, 255, 255, 0.95);
+        }
+        .mb-quote--theirs {
+          background: var(--bg-tertiary, #f1f5f9);
+          border-left: 3px solid var(--accent, #4f46e5);
+          color: var(--text-secondary, #334155);
+        }
+        .mb-quote-sender {
+          font-weight: 700;
+          font-size: 0.75rem;
+          color: inherit;
+        }
+        .mb-quote-text {
+          opacity: 0.85;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         /* Reactions Modal */
@@ -588,7 +676,8 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
           font-size: 0.75rem; font-weight: 600; color: var(--text-tertiary); margin-left: 0.5rem;
         }
         .mb-bubble {
-          padding: 0.65rem 1rem; border-radius: 16px;
+          display: inline-block; width: auto; max-width: 100%;
+          padding: 0.5rem 0.7rem; border-radius: 12px;
           word-break: break-word; font-size: 0.9375rem; line-height: 1.45;
         }
         .mb-bubble--mine {
@@ -601,7 +690,7 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
         .mb-bubble--deleted {
           background: var(--bg-tertiary); border: 1px dashed var(--border); border-radius: 12px; padding: 0.5rem 0.85rem;
         }
-        .mb-text { margin: 0; white-space: pre-wrap; }
+        .mb-text { margin: 0; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
         .mb-text--deleted { font-style: italic; color: var(--text-muted); font-size: 0.8125rem; }
 
         .mb-attachments { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.25rem; }
@@ -642,6 +731,14 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
         .file-card--theirs .file-name { color: var(--text-primary); font-weight: 600; font-size: 0.84rem; }
         .file-card--theirs .file-size { color: var(--text-muted); font-size: 0.75rem; }
         .file-card--theirs .file-dl-icon { color: var(--text-muted); opacity: 0.9; }
+
+        .file-dl-link {
+          display: flex; align-items: center; justify-content: center;
+          padding: 4px; border-radius: 6px;
+        }
+        .file-dl-link:hover {
+          background: rgba(0, 0, 0, 0.08);
+        }
 
         .mb-footer {
           display: flex; align-items: center; gap: 0.35rem; font-size: 0.6875rem; color: var(--text-faint);

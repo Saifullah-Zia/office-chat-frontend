@@ -29,6 +29,7 @@ export interface UserResponse {
   active: boolean;
   department?: string;
   profilePicUrl?: string;
+  workStatus?: string;
   createdAt?: string;
 }
 
@@ -42,6 +43,7 @@ export interface MemberResponse {
   department?: string;
   role?: Role;
   profilePicUrl?: string;
+  workStatus?: string;
 }
 
 export interface ConversationResponse {
@@ -125,6 +127,8 @@ export interface MessageRequest {
 
 export interface TypingRequest {
   conversationId: number;
+  userId: number;
+  userName: string;
   typing: boolean;
 }
 

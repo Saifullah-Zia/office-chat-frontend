@@ -22,6 +22,16 @@ function buildAudioUrl(src: string): string {
   return `${base}${path}`;
 }
 
+// ── Audio Cache ──────────────────────────────────────────────────────
+// Keeps fetched audio blob URLs + decoded waveform peaks in memory so
+// switching conversations or re-mounting doesn't re-fetch from the server.
+interface CachedAudio {
+  blobUrl: string;
+  peaks: number[];
+  duration: number;
+}
+const audioCache = new Map<string, CachedAudio>();
+
 export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const animFrameRef = useRef<number>(0);
@@ -42,13 +52,45 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
     setError(false);
     setErrorDetail("");
 
-    // Clean up any previous blob URL / audio element before loading a new one
+    // Clean up any previous audio element before loading a new one
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
+
+    // Check cache first — skip the entire fetch + decode if we already have it
+    const cacheKey = src;
+    const cached = audioCache.get(cacheKey);
+    if (cached) {
+      blobUrlRef.current = cached.blobUrl;
+      setPeaks(cached.peaks);
+      setDuration(cached.duration);
+
+      const audio = new Audio(cached.blobUrl);
+      audioRef.current = audio;
+      audio.addEventListener("loadedmetadata", () => {
+        if (isFinite(audio.duration)) setDuration(audio.duration);
+      });
+      audio.addEventListener("ended", () => {
+        setIsPlaying(false);
+        setProgress(100);
+      });
+      audio.addEventListener("error", () => {
+        console.warn("AudioPlayer: <audio> element error (cached)", audio.error?.message);
+        setError(true);
+        setErrorDetail("Playback error");
+      });
+
+      setLoading(false);
+      return;
+    }
+
+    // Not cached — revoke any old non-cached blob
     if (blobUrlRef.current) {
-      URL.revokeObjectURL(blobUrlRef.current);
+      // Don't revoke if it belongs to the cache
+      let isInCache = false;
+      audioCache.forEach((v) => { if (v.blobUrl === blobUrlRef.current) isInCache = true; });
+      if (!isInCache) URL.revokeObjectURL(blobUrlRef.current);
       blobUrlRef.current = "";
     }
 
@@ -140,6 +182,13 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
         const normalized = waveformPeaks.map((p) => 0.15 + (p / maxPeak) * 0.85);
         setPeaks(normalized);
         audioCtx.close();
+
+        // Store in cache for instant replay on re-mount
+        audioCache.set(cacheKey, {
+          blobUrl: blobUrl,
+          peaks: normalized,
+          duration: decoded.duration && isFinite(decoded.duration) ? decoded.duration : 0,
+        });
       } catch {
         // If decode fails, keep default peaks
       }
@@ -163,9 +212,7 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
         audioRef.current.pause();
         audioRef.current = null;
       }
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current);
-      }
+      // Don't revoke cached blob URLs — they're reused across mounts
     };
   }, [loadAudio]);
 

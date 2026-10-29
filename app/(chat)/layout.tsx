@@ -10,6 +10,7 @@ import IncomingCallOverlay from "@/components/IncomingCallOverlay";
 import CallWindow from "@/components/CallWindow";
 import { CallContext } from "@/context/CallContext";
 import { CallType } from "@/types/call";
+import GlobalSearchModal from "@/components/GlobalSearchModal";
 
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -67,6 +68,8 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
             onReject={() => rejectCall(incomingSignal)}
           />
         )}
+
+        <GlobalSearchModal />
 
         {activeCall && (
           <CallWindow

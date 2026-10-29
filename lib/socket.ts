@@ -96,9 +96,10 @@ export const Topics = {
   conversation: (convId: number) => `/topic/conversation.${convId}`,
   typing: (convId: number) => `/topic/conversation.${convId}.typing`,
   presence: () => `/topic/presence`,
+  userStatus: () => `/topic/user.status`,
   userQueue: (userId: number) => `/queue/user.${userId}`,
 };
 
 export const Destinations = {
-  typing: (convId: number) => `/app/chat.${convId}.typing`,
+  typing: (convId: number) => `/app/chat.typing`,
 };

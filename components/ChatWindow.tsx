@@ -48,6 +48,7 @@ function formatDateHeader(isoString: string): string {
 
 export default function ChatWindow({ conversationId }: ChatWindowProps) {
   const userId = useStore((s) => s.userId);
+  const userName = useStore((s) => s.userName);
   const conversations = useStore((s) => s.conversations);
   const activeConv = conversations.find((c) => c.id === conversationId);
 
@@ -61,6 +62,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   const addMessage = useStore((s) => s.addMessage);
 
   const onlineUserIds = useStore((s) => s.onlineUserIds);
+  const statusesByUserId = useStore((s) => s.statusesByUserId);
 
   const selectConvTyping = useCallback(
     (s: { typingByConv: Record<number, Set<string>> }) =>
@@ -93,6 +95,9 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState<number>(0);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Determine other member info for direct chats
@@ -207,20 +212,93 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   }, [messages, typingUsers]);
 
   // Handle Typing Notification
+  const mentionCandidates = useMemo(() => {
+    if (mentionQuery === null) return [];
+    const members = activeConv?.members ?? [];
+    const list: { id: number | string; name: string; isSpecial?: boolean; sub?: string }[] = [];
+
+    if (activeConv?.type === "GROUP") {
+      list.push({ id: "all", name: "all", isSpecial: true, sub: "Notify everyone in this channel" });
+      list.push({ id: "here", name: "here", isSpecial: true, sub: "Notify active colleagues" });
+    }
+
+    members.forEach((m) => {
+      if (m.id !== userId) {
+        list.push({ id: m.id, name: m.name, sub: m.department || m.email });
+      }
+    });
+
+    return list.filter((c) => c.name.toLowerCase().includes(mentionQuery));
+  }, [mentionQuery, activeConv, userId]);
+
+  const insertMention = (name: string) => {
+    const val = text;
+    const cursorPos = inputRef.current?.selectionStart ?? val.length;
+    const textBefore = val.slice(0, cursorPos);
+    const textAfter = val.slice(cursorPos);
+    const atIndex = textBefore.lastIndexOf("@");
+    if (atIndex !== -1) {
+      const newText = textBefore.slice(0, atIndex) + "@" + name + " " + textAfter;
+      setText(newText);
+      setMentionQuery(null);
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 10);
+    }
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (mentionCandidates.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMentionIndex((prev) => (prev + 1) % mentionCandidates.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionIndex((prev) => (prev - 1 + mentionCandidates.length) % mentionCandidates.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        insertMention(mentionCandidates[mentionIndex].name);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMentionQuery(null);
+        return;
+      }
+    }
+  };
+
   const notifyTyping = useCallback((isTyping: boolean) => {
     publish(Destinations.typing(conversationId), {
       conversationId,
+      userId: userId ?? 0,
+      userName: userName ?? "User",
       typing: isTyping,
     } satisfies TypingRequest).catch(() => {});
-  }, [conversationId]);
+  }, [conversationId, userId, userName]);
 
   const handleTextChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setText(e.target.value);
+    const val = e.target.value;
+    const cursorPos = e.target.selectionStart ?? val.length;
+    setText(val);
     notifyTyping(true);
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       notifyTyping(false);
     }, 2500);
+
+    const textBeforeCursor = val.slice(0, cursorPos);
+    const atMatch = textBeforeCursor.match(/@([a-zA-Z0-9_\-\.]*)$/);
+    if (atMatch) {
+      setMentionQuery(atMatch[1].toLowerCase());
+      setMentionIndex(0);
+    } else {
+      setMentionQuery(null);
+    }
   };
 
   // Handle Send Message
@@ -592,12 +670,44 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
               </button>
 
               <div className="cw-input-wrapper">
+                {/* Mention Popover */}
+                {mentionCandidates.length > 0 && (
+                  <div className="cw-mention-popover">
+                    <div className="cw-mention-header">Mentions</div>
+                    {mentionCandidates.map((c, i) => (
+                      <button
+                        key={String(c.id)}
+                        type="button"
+                        className={`cw-mention-item ${i === mentionIndex ? "cw-mention-item--active" : ""}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          insertMention(c.name);
+                        }}
+                      >
+                        <div className="cw-mention-left">
+                          {c.isSpecial ? (
+                            <span style={{ fontSize: "1.1rem" }}>{c.name === "all" ? "📢" : "👋"}</span>
+                          ) : (
+                            <Avatar name={c.name} size={24} />
+                          )}
+                          <span className={`cw-mention-name ${c.isSpecial ? "cw-mention-name--special" : ""}`}>
+                            @{c.name}
+                          </span>
+                        </div>
+                        {c.sub && <span className="cw-mention-sub">{c.sub}</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 <input
+                  ref={inputRef}
                   type="text"
                   className="cw-text-input"
                   placeholder={`Message ${title}...`}
                   value={text}
                   onChange={handleTextChange}
+                  onKeyDown={handleInputKeyDown}
                 />
 
                 {/* Emoji Picker Trigger */}
@@ -718,7 +828,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
         .cw-search-subclose:hover { color: var(--text-primary); }
 
         .cw-body {
-          flex: 1; overflow-y: auto; padding: 1.5rem;
+          flex: 1; overflow-y: auto; overflow-x: hidden; padding: 1.5rem;
           display: flex; flex-direction: column; background: var(--bg-secondary);
         }
 
@@ -806,6 +916,41 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
         .cw-input-btn { color: var(--text-muted); padding: 0.5rem; border-radius: 8px; background: none; border: none; cursor: pointer; display: flex; }
         .cw-input-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
         .cw-input-wrapper { flex: 1; display: flex; align-items: center; position: relative; }
+        .cw-mention-popover {
+          position: absolute; bottom: calc(100% + 8px); left: 0; right: 0;
+          background: var(--surface-card, #ffffff);
+          border: 1px solid var(--border, #e2e8f0);
+          border-radius: 12px;
+          box-shadow: var(--shadow-lg, 0 10px 25px rgba(0,0,0,0.15));
+          max-height: 220px; overflow-y: auto; z-index: 50;
+          padding: 0.35rem; display: flex; flex-direction: column; gap: 2px;
+        }
+        .cw-mention-header {
+          font-size: 0.6875rem; font-weight: 700; text-transform: uppercase;
+          letter-spacing: 0.05em; color: var(--text-muted, #94a3b8);
+          padding: 0.35rem 0.6rem 0.2rem;
+        }
+        .cw-mention-item {
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 0.4rem 0.6rem; border-radius: 8px; border: none; background: transparent;
+          cursor: pointer; transition: background 0.12s; text-align: left; width: 100%;
+        }
+        .cw-mention-item:hover, .cw-mention-item--active {
+          background: var(--bg-secondary, #f8fafc);
+        }
+        .cw-mention-left {
+          display: flex; align-items: center; gap: 0.5rem; min-width: 0;
+        }
+        .cw-mention-name {
+          font-size: 0.84375rem; font-weight: 600; color: var(--text-primary, #0f172a);
+        }
+        .cw-mention-name--special {
+          color: var(--accent, #4f46e5); font-weight: 700;
+        }
+        .cw-mention-sub {
+          font-size: 0.72rem; color: var(--text-muted, #64748b);
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px;
+        }
         .cw-text-input {
           width: 100%; padding: 0.75rem 2.75rem 0.75rem 1rem; background: var(--bg-secondary);
           border: 1px solid var(--border); border-radius: 12px; font-size: 0.9375rem; color: var(--text-primary);

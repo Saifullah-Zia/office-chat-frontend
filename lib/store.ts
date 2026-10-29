@@ -52,6 +52,30 @@ interface AppState {
   // Typing indicators
   typingByConv: Record<number, Set<string>>;
   setTyping: (convId: number, userName: string, isTyping: boolean) => void;
+
+  // Starred messages
+  starredMessageIds: Set<number>;
+  toggleStarMessage: (id: number) => void;
+
+  // Work presence status (e.g. In a Meeting, Lunch, Focus Mode)
+  userStatus: { emoji: string; text: string } | null;
+  setUserStatus: (status: { emoji: string; text: string } | null) => void;
+  statusesByUserId: Record<number, { emoji: string; text: string }>;
+  setStatusForUser: (userId: number, status: { emoji: string; text: string } | null) => void;
+
+  // Global search modal
+  isGlobalSearchOpen: boolean;
+  setGlobalSearchOpen: (open: boolean) => void;
+}
+
+function parseWorkStatus(raw?: string | null): { emoji: string; text: string } | null {
+  if (!raw || !raw.trim()) return null;
+  const trimmed = raw.trim();
+  const match = trimmed.match(/^([\uD800-\uDBFF][\uDC00-\uDFFF]|\p{Extended_Pictographic}|\u2705|\u270A|\u270B|\u270C|\u270D|\u270F|\u2600-\u26FF|\u2700-\u27BF)\s*(.*)$/u);
+  if (match) {
+    return { emoji: match[1], text: match[2] || "Busy" };
+  }
+  return { emoji: "💼", text: trimmed };
 }
 
 export const useStore = create<AppState>()((set) => ({
@@ -70,10 +94,43 @@ export const useStore = create<AppState>()((set) => ({
         userRole: user.role,
       });
     }
+
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.removeItem("office_user_status");
+        const currentId = user ? user.userId : null;
+        if (currentId) {
+          const savedStarred = localStorage.getItem("office_starred_msgs_" + currentId) || localStorage.getItem("office_starred_msgs");
+          if (savedStarred) {
+            set({ starredMessageIds: new Set(JSON.parse(savedStarred)) });
+          }
+          const savedStatus = localStorage.getItem("office_user_status_" + currentId);
+          if (savedStatus) {
+            const parsed = JSON.parse(savedStatus);
+            set((s) => ({
+              userStatus: parsed,
+              statusesByUserId: { ...s.statusesByUserId, [currentId]: parsed },
+            }));
+          } else {
+            set({ userStatus: null });
+          }
+        }
+      } catch {}
+    }
   },
 
   users: [],
-  setUsers: (users) => set({ users }),
+  setUsers: (users) =>
+    set((s) => {
+      const nextStatuses = { ...s.statusesByUserId };
+      users.forEach((u) => {
+        if (u.workStatus) {
+          const parsed = parseWorkStatus(u.workStatus);
+          if (parsed) nextStatuses[u.id] = parsed;
+        }
+      });
+      return { users, statusesByUserId: nextStatuses };
+    }),
 
   onlineUserIds: new Set<number>(),
   initOnline: (ids) => set({ onlineUserIds: new Set(ids) }),
@@ -87,7 +144,19 @@ export const useStore = create<AppState>()((set) => ({
     }),
 
   conversations: [],
-  setConversations: (conversations) => set({ conversations }),
+  setConversations: (conversations) =>
+    set((s) => {
+      const nextStatuses = { ...s.statusesByUserId };
+      conversations.forEach((c) => {
+        c.members?.forEach((m) => {
+          if (m.workStatus) {
+            const parsed = parseWorkStatus(m.workStatus);
+            if (parsed) nextStatuses[m.id] = parsed;
+          }
+        });
+      });
+      return { conversations, statusesByUserId: nextStatuses };
+    }),
   upsertConversation: (conv) =>
     set((s) => {
       const exists = s.conversations.some((c) => c.id === conv.id);
@@ -185,6 +254,56 @@ export const useStore = create<AppState>()((set) => ({
       else set_.delete(userName);
       return { typingByConv: { ...s.typingByConv, [convId]: set_ } };
     }),
+
+  starredMessageIds: new Set<number>(),
+  toggleStarMessage: (id) =>
+    set((s) => {
+      const next = new Set(s.starredMessageIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem("office_starred_msgs", JSON.stringify(Array.from(next)));
+        } catch {}
+      }
+      return { starredMessageIds: next };
+    }),
+
+  userStatus: null,
+  statusesByUserId: {},
+  setStatusForUser: (userId, status) =>
+    set((s) => {
+      const next = { ...s.statusesByUserId };
+      if (status) next[userId] = status;
+      else delete next[userId];
+      return { statusesByUserId: next };
+    }),
+
+  setUserStatus: (status) => {
+    const currentUserId = useStore.getState().userId;
+    if (typeof window !== "undefined" && currentUserId) {
+      try {
+        const key = "office_user_status_" + currentUserId;
+        if (status) localStorage.setItem(key, JSON.stringify(status));
+        else localStorage.removeItem(key);
+      } catch {}
+    }
+    set((s) => ({
+      userStatus: status,
+      statusesByUserId: currentUserId
+        ? status
+          ? { ...s.statusesByUserId, [currentUserId]: status }
+          : (() => {
+              const next = { ...s.statusesByUserId };
+              delete next[currentUserId];
+              return next;
+            })()
+        : s.statusesByUserId,
+    }));
+  },
+
+  isGlobalSearchOpen: false,
+  setGlobalSearchOpen: (open) => set({ isGlobalSearchOpen: open }),
 }));
 
 // ── Selectors ───────────────────────────────────────────────────────────
