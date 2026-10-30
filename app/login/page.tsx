@@ -29,12 +29,50 @@ export default function LoginPage() {
     setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
   };
 
+  // Two-step verification: after the password, the server asks for an authenticator code.
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
+
+  const finishLogin = (data: AuthResponse) => {
+    saveAuth(data.token, {
+      userId: data.userId,
+      name: data.name,
+      email: data.email,
+      role: data.role,
+    });
+    window.location.href = "/";
+  };
+
+  const handleVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mfaToken) return;
+    setError(null);
+    setIsLoading(true);
+    try {
+      finishLogin(await apiPost<AuthResponse>("/api/auth/login/verify", { mfaToken, code: mfaCode.trim() }));
+    } catch (err: unknown) {
+      const data = (err as { response?: { status?: number; data?: { error?: string } } })?.response;
+      setError(data?.data?.error ?? "That code didn't work. Please try again.");
+      if (data?.status === 401 && data?.data?.error?.includes("expired")) {
+        setMfaToken(null);
+        setMfaCode("");
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setIsLoading(true);
     try {
       const data = await apiPost<AuthResponse>("/api/auth/login", form);
+
+      if (data.mfaRequired && data.mfaToken) {
+        setMfaToken(data.mfaToken);
+        return;
+      }
 
       // Save token + user to localStorage FIRST
       saveAuth(data.token, {
@@ -75,6 +113,39 @@ export default function LoginPage() {
 
         {error && <div className="error-alert">{error}</div>}
 
+        {mfaToken ? (
+          <form onSubmit={handleVerify} className="login-form">
+            <div className="field-group">
+              <label htmlFor="login-code">Verification code</label>
+              <input
+                id="login-code"
+                name="code"
+                inputMode="text"
+                autoComplete="one-time-code"
+                autoFocus
+                required
+                maxLength={12}
+                placeholder="123456"
+                value={mfaCode}
+                onChange={(e) => { setError(null); setMfaCode(e.target.value); }}
+              />
+              <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", margin: "0.4rem 0 0" }}>
+                Open your authenticator app and enter the 6-digit code for Office Chat. Lost your phone? Enter one of your recovery codes.
+              </p>
+            </div>
+            <button type="submit" disabled={isLoading || mfaCode.trim().length < 6} className="submit-btn">
+              {isLoading ? <><Loader2 size={18} className="spinner" /> Verifying...</> : "Verify and sign in"}
+            </button>
+            <button
+              type="button"
+              className="submit-btn"
+              style={{ background: "transparent", color: "var(--text-muted)", boxShadow: "none" }}
+              onClick={() => { setMfaToken(null); setMfaCode(""); setError(null); }}
+            >
+              Use a different account
+            </button>
+          </form>
+        ) : (
         <form onSubmit={handleSubmit} className="login-form">
           <div className="field-group">
             <label htmlFor="login-email">Email Address</label>
@@ -123,6 +194,7 @@ export default function LoginPage() {
             )}
           </button>
         </form>
+        )}
 
         <div className="login-footer">
           <p>

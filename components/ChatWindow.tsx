@@ -1,13 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
   Phone, Video, Send, Paperclip, Mic, X, Loader2, Users, Search, Smile, Info, CornerDownRight, Vote, Pin, ChevronRight,
+  ChevronDown, Clock, ChevronLeft, Timer, Plus,
 } from "lucide-react";
+import { ScheduleMessageModal, formatWhen } from "./PlannerModals";
+import ThreadPanel from "./ThreadPanel";
+import { showToast } from "@/lib/toast";
+import { formatLastSeen } from "@/lib/time";
 import { useStore } from "@/lib/store";
-import { apiGet, apiPost, apiPostForm } from "@/lib/api";
+import { apiGet, apiPost, apiPostForm, apiDelete } from "@/lib/api";
 import {
-  ConversationResponse, MessageResponse, MessageRequest,
+  ConversationResponse, MessageResponse, MessageRequest, ScheduledMessageView,
   AttachmentResponse, TypingEvent, TypingRequest, MemberResponse,
 } from "@/types";
 import { subscribe, publish, Topics, Destinations } from "@/lib/socket";
@@ -19,8 +24,10 @@ import ChatInfoDrawer from "./ChatInfoDrawer";
 import CreatePollModal from "./CreatePollModal";
 import { useCallContext } from "@/context/CallContext";
 import { playMessageChime } from "@/lib/sound";
+import { desktopNotify } from "@/lib/notify";
 
 const EMPTY_MESSAGES: MessageResponse[] = [];
+const PAGE_SIZE = 30;
 const EMPTY_TYPING = new Set<string>();
 
 interface ChatWindowProps {
@@ -72,10 +79,22 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   const typingUsers = useStore(selectConvTyping);
   const setTyping = useStore((s) => s.setTyping);
 
-  const { initiateCall } = useCallContext();
+  const { initiateCall, initiateGroupCall, inCall } = useCallContext();
 
-  const [text, setText] = useState("");
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [text, setText] = useState(() => useStore.getState().drafts[conversationId] ?? "");
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragDepthRef = useRef(0);
+  const [isScheduleOpen, setIsScheduleOpen] = useState(false);
+  const [threadRootId, setThreadRootId] = useState<number | null>(null);
+  const [isComposerMenuOpen, setIsComposerMenuOpen] = useState(false);
+  const hasDraftToSend = !!text.trim() || selectedFiles.length > 0;
+  const [scheduledHere, setScheduledHere] = useState<ScheduledMessageView[]>([]);
+  const [showScheduledList, setShowScheduledList] = useState(false);
+  // Lets the history loader (declared earlier) call jumpToMessage (declared later).
+  const jumpToMessageRef = useRef<((id: number) => void) | null>(null);
+  const setDraft = useStore((s) => s.setDraft);
+  const requestEdit = useStore((s) => s.requestEdit);
   const [replyMessage, setReplyMessage] = useState<MessageResponse | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -90,10 +109,33 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   const [pinnedIndex, setPinnedIndex] = useState(0);
 
   const userRole = useStore((s) => s.userRole);
-  const isReadOnly = (activeConv?.onlyAdminsCanPost || activeConv?.isAnnouncement) && userRole !== "ADMIN";
+  const isConvAdmin =
+    userRole === "ADMIN" ||
+    (activeConv?.adminIds
+      ? userId !== null && activeConv.adminIds.includes(userId)
+      : !!activeConv?.members.some((m) => m.id === userId && m.role === "ADMIN"));
+  const isReadOnly = (activeConv?.onlyAdminsCanPost || activeConv?.isAnnouncement) && !isConvAdmin;
+  const isBlocked = !!(activeConv?.blockedByMe || activeConv?.blockedMe);
   const pinnedMessages = useMemo(() => messages.filter((m) => m.pinned), [messages]);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  // History paging, unread line & jump-to-latest
+  const prependMessages = useStore((s) => s.prependMessages);
+  const lastSeenByUserId = useStore((s) => s.lastSeenByUserId);
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [unreadAnchor, setUnreadAnchor] = useState<{ id: number; count: number } | null>(null);
+  const [showJump, setShowJump] = useState(false);
+  const [newWhileAway, setNewWhileAway] = useState(0);
+  const hasMoreRef = useRef(false);
+  const loadingOlderRef = useRef(false);
+  const isAtBottomRef = useRef(true);
+  const lastMsgIdRef = useRef<number | null>(null);
+  const initialScrollRef = useRef(false);
+  const restoreScrollRef = useRef<{ height: number; top: number } | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
@@ -115,17 +157,6 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
 
   const isOnline = otherMember ? onlineUserIds.has(otherMember.id) : false;
 
-  // Shared attachments across conversation
-  const sharedAttachments: AttachmentResponse[] = useMemo(() => {
-    const list: AttachmentResponse[] = [];
-    messages.forEach((m) => {
-      if (m.attachments && m.attachments.length > 0) {
-        list.push(...m.attachments);
-      }
-    });
-    return list;
-  }, [messages]);
-
   // Filter messages by search query if search is open
   const filteredMessages = useMemo(() => {
     if (!isSearchOpen || !searchQuery.trim()) return messages;
@@ -141,18 +172,118 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   useEffect(() => {
     if (!conversationId || isNaN(conversationId)) return;
     setIsLoading(true);
+    setHasMore(false);
+    hasMoreRef.current = false;
+    setUnreadAnchor(null);
+    setNewWhileAway(0);
+    setShowJump(false);
+    isAtBottomRef.current = true;
+    lastMsgIdRef.current = null;
+
+    // Capture the unread count before clearing it, to place the "unread messages" line.
+    const unreadAtOpen =
+      useStore.getState().conversations.find((c) => c.id === conversationId)?.unreadCount ?? 0;
     useStore.getState().clearUnread(conversationId);
     apiPost(`/api/conversations/${conversationId}/read`).catch(() => {});
-    apiGet<MessageResponse[]>(`/api/conversations/${conversationId}/messages`)
+
+    apiGet<MessageResponse[]>(`/api/conversations/${conversationId}/messages`, { size: PAGE_SIZE })
       .then((msgs) => {
         setMessages(conversationId, msgs);
+        const more = msgs.length === PAGE_SIZE;
+        setHasMore(more);
+        hasMoreRef.current = more;
+        if (unreadAtOpen > 0) {
+          const fromOthers = msgs.filter((m) => m.senderId !== userId);
+          const first = fromOthers.slice(-unreadAtOpen)[0];
+          if (first) setUnreadAnchor({ id: first.id, count: unreadAtOpen });
+        }
+        initialScrollRef.current = true;
         setIsLoading(false);
+
+        // Opened from search / mentions / tasks / reminders: scroll to that message.
+        const jump = useStore.getState().pendingJump;
+        if (jump && jump.conversationId === conversationId) {
+          useStore.getState().clearPendingJump();
+          setTimeout(() => jumpToMessageRef.current?.(jump.messageId), 120);
+        }
       })
       .catch((err) => {
         console.error("Failed to load messages:", err);
         setIsLoading(false);
       });
-  }, [conversationId, setMessages]);
+
+    apiGet<ScheduledMessageView[]>("/api/scheduled", { conversationId })
+      .then(setScheduledHere)
+      .catch(() => {});
+  }, [conversationId, setMessages, userId]);
+
+  // Load the page of messages older than the oldest one on screen.
+  const loadOlder = async (): Promise<boolean> => {
+    if (loadingOlderRef.current || !hasMoreRef.current) return false;
+    const current = useStore.getState().messagesByConv[conversationId] ?? [];
+    if (current.length === 0) return false;
+
+    loadingOlderRef.current = true;
+    setIsLoadingOlder(true);
+    try {
+      const older = await apiGet<MessageResponse[]>(`/api/conversations/${conversationId}/messages`, {
+        size: PAGE_SIZE,
+        before: current[0].id,
+      });
+      const more = older.length === PAGE_SIZE;
+      hasMoreRef.current = more;
+      setHasMore(more);
+      if (older.length > 0) {
+        const body = bodyRef.current;
+        restoreScrollRef.current = body ? { height: body.scrollHeight, top: body.scrollTop } : null;
+        prependMessages(conversationId, older);
+      }
+      return older.length > 0;
+    } catch (err) {
+      console.error("Failed to load older messages:", err);
+      return false;
+    } finally {
+      loadingOlderRef.current = false;
+      setIsLoadingOlder(false);
+    }
+  };
+
+  const scrollToBottom = (smooth = true) => {
+    bottomRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto" });
+    setNewWhileAway(0);
+  };
+
+  const handleBodyScroll = () => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+    isAtBottomRef.current = atBottom;
+    setShowJump(!atBottom);
+    if (atBottom) setNewWhileAway(0);
+    if (body.scrollTop < 120 && !(isSearchOpen && searchQuery)) loadOlder();
+  };
+
+  // Keep the viewport steady when older messages are added above it,
+  // and do the initial jump (to the unread line, or the bottom) after first render.
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+
+    if (restoreScrollRef.current) {
+      const { height, top } = restoreScrollRef.current;
+      body.scrollTop = body.scrollHeight - height + top;
+      restoreScrollRef.current = null;
+      return;
+    }
+
+    if (initialScrollRef.current && !isLoading) {
+      initialScrollRef.current = false;
+      const anchorEl = unreadAnchor ? document.getElementById(`msg-${unreadAnchor.id}`) : null;
+      if (anchorEl) anchorEl.scrollIntoView({ block: "start" });
+      else body.scrollTop = body.scrollHeight;
+      lastMsgIdRef.current = messages[messages.length - 1]?.id ?? null;
+    }
+  }, [messages, isLoading, unreadAnchor]);
 
   // Subscribe to realtime conversation updates & typing events via STOMP
   useEffect(() => {
@@ -170,13 +301,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
             const isMuted = activeConv?.mutedUntil && new Date(activeConv.mutedUntil).getTime() > Date.now();
             if (!isMuted) {
               playMessageChime();
-              if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted" && !document.hasFocus()) {
-                try {
-                  new Notification(msg.senderName, {
-                    body: msg.content || "Sent an attachment",
-                  });
-                } catch {}
-              }
+              desktopNotify(msg.senderName, msg.content || "Sent an attachment", { tag: `conv-${msg.conversationId}` });
             }
           }
         });
@@ -206,10 +331,69 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
     };
   }, [conversationId, userId, addMessage, setTyping]);
 
-  // Auto-scroll to bottom on new messages
+  // Refresh this chat's block state when either side blocks/unblocks
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, typingUsers]);
+    if (!conversationId || !userId) return;
+    let sub: { unsubscribe: () => void } | null = null;
+    (async () => {
+      try {
+        sub = await subscribe("/topic/user.block", (frame) => {
+          const ev: { blockerId: number; blockedId: number } = JSON.parse(frame.body);
+          if (ev.blockerId !== userId && ev.blockedId !== userId) return;
+          apiGet<ConversationResponse>(`/api/conversations/${conversationId}`)
+            .then((conv) => useStore.getState().upsertConversation(conv))
+            .catch(() => {});
+        });
+      } catch (err) {
+        console.error("STOMP block subscription error:", err);
+      }
+    })();
+    return () => sub?.unsubscribe();
+  }, [conversationId, userId]);
+
+  const jumpToMessage = async (messageId: number) => {
+    setIsSearchOpen(false);
+    setSearchQuery("");
+    const nextFrame = () => new Promise((r) => setTimeout(r, 50));
+    await nextFrame(); // let the full (unfiltered) list render
+
+    // Starred messages can be older than what's loaded — page back until we find it.
+    let el = document.getElementById(`msg-${messageId}`);
+    for (let i = 0; !el && i < 30; i++) {
+      if (!(await loadOlder())) break;
+      await nextFrame();
+      el = document.getElementById(`msg-${messageId}`);
+    }
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("cw-msg-anchor--flash");
+    setTimeout(() => el?.classList.remove("cw-msg-anchor--flash"), 1600);
+  };
+  useEffect(() => {
+    jumpToMessageRef.current = jumpToMessage;
+  });
+
+  // New message at the bottom: follow it if we're at the bottom (or sent it), else count it.
+  useEffect(() => {
+    const last = messages[messages.length - 1];
+    if (!last || isLoading || last.id === lastMsgIdRef.current) return;
+    const isNew = lastMsgIdRef.current !== null;
+    lastMsgIdRef.current = last.id;
+    if (!isNew) return;
+
+    if (isAtBottomRef.current || last.senderId === userId) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else {
+      setNewWhileAway((n) => n + 1);
+    }
+  }, [messages, isLoading, userId]);
+
+  // Keep the typing indicator visible only when already at the bottom
+  useEffect(() => {
+    if (typingUsers.size > 0 && isAtBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [typingUsers]);
 
   // Handle Typing Notification
   const mentionCandidates = useMemo(() => {
@@ -248,6 +432,10 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   };
 
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowUp" && mentionCandidates.length === 0 && !text && editLastOwnMessage()) {
+      e.preventDefault();
+      return;
+    }
     if (mentionCandidates.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -301,53 +489,133 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
     }
   };
 
-  // Handle Send Message
-  const handleSend = useCallback(async (e?: React.FormEvent) => {
+  // Persist the composer text as this chat's draft
+  useEffect(() => {
+    setDraft(conversationId, text);
+  }, [conversationId, text, setDraft]);
+
+  const MAX_FILES = 10;
+  const addFiles = (files: FileList | File[] | null) => {
+    if (!files || files.length === 0) return;
+    setSelectedFiles((prev) => [...prev, ...Array.from(files)].slice(0, MAX_FILES));
+  };
+
+  // Handle Send Message — each file becomes its own message; the text rides on the first one.
+  const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     let trimmed = text.trim();
-    if ((!trimmed && !selectedFile) || isUploading) return;
+    if ((!trimmed && selectedFiles.length === 0) || isUploading) return;
 
     if (replyMessage) {
       trimmed = `Replying to ${replyMessage.senderName}: "${replyMessage.content.slice(0, 40)}..."\n${trimmed}`;
     }
 
-    let attachmentId: number | undefined = undefined;
-
-    if (selectedFile) {
+    const attachmentIds: number[] = [];
+    if (selectedFiles.length > 0) {
       setIsUploading(true);
       try {
-        const formData = new FormData();
-        formData.append("file", selectedFile);
-        formData.append("conversationId", conversationId.toString());
-        const att = await apiPostForm<AttachmentResponse>("/api/files/upload", formData);
-        attachmentId = att.id;
+        for (const file of selectedFiles) {
+          const formData = new FormData();
+          formData.append("file", file);
+          formData.append("conversationId", conversationId.toString());
+          const att = await apiPostForm<AttachmentResponse>("/api/files/upload", formData);
+          attachmentIds.push(att.id);
+        }
       } catch (err) {
         console.error("Failed to upload file:", err);
+        alert("A file failed to upload. Nothing was sent.");
         setIsUploading(false);
         return;
-      } finally {
-        setIsUploading(false);
       }
+      setIsUploading(false);
     }
 
-    const payload: MessageRequest = {
-      conversationId,
-      content: trimmed,
-      attachmentId,
-    };
+    const payloads: MessageRequest[] =
+      attachmentIds.length === 0
+        ? [{ conversationId, content: trimmed }]
+        : attachmentIds.map((attachmentId, i) => ({
+            conversationId,
+            content: i === 0 ? trimmed : "",
+            attachmentId,
+          }));
 
     setText("");
-    setSelectedFile(null);
+    setSelectedFiles([]);
     setReplyMessage(null);
     notifyTyping(false);
 
-    try {
-      const sent = await apiPost<MessageResponse>(`/api/conversations/${conversationId}/messages`, payload);
-      addMessage(sent);
-    } catch (err) {
-      console.error("Failed to send message:", err);
+    for (const payload of payloads) {
+      try {
+        const sent = await apiPost<MessageResponse>(`/api/conversations/${conversationId}/messages`, payload);
+        addMessage(sent);
+      } catch (err) {
+        console.error("Failed to send message:", err);
+      }
     }
-  }, [text, selectedFile, replyMessage, isUploading, conversationId, notifyTyping, addMessage]);
+  };
+
+  // ── Drag & drop / paste files ──────────────────────────────────────
+  const canCompose = !isReadOnly && !isBlocked;
+  const handleDragEnter = (e: React.DragEvent) => {
+    if (!canCompose || !e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDragging(true);
+  };
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (!isDragging) return;
+    e.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDragging(false);
+  };
+  const handleDrop = (e: React.DragEvent) => {
+    if (!isDragging) return;
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDragging(false);
+    addFiles(e.dataTransfer.files);
+  };
+  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const files = Array.from(e.clipboardData.files);
+    if (files.length > 0) {
+      e.preventDefault();
+      addFiles(files);
+    }
+  };
+
+  // ── Keyboard shortcuts scoped to the open chat ─────────────────────
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setIsSearchOpen(true);
+        return;
+      }
+      if (e.key === "Escape") {
+        if (document.querySelector('[role="dialog"]')) return; // let open dialogs handle it
+        if (showEmojiPicker) setShowEmojiPicker(false);
+        else if (replyMessage) setReplyMessage(null);
+        else if (isSearchOpen) { setIsSearchOpen(false); setSearchQuery(""); }
+        else if (isDrawerOpen) setIsDrawerOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showEmojiPicker, replyMessage, isSearchOpen, isDrawerOpen]);
+
+  // ↑ in an empty composer edits your last text message (if still inside the 15-minute window)
+  const editLastOwnMessage = () => {
+    // Only called from a keydown handler, never during render.
+    // eslint-disable-next-line react-hooks/purity
+    const cutoff = Date.now() - 15 * 60 * 1000;
+    const last = [...messages].reverse().find(
+      (m) => m.senderId === userId && !m.deleted && m.type === "TEXT" && new Date(m.createdAt).getTime() > cutoff
+    );
+    if (!last) return false;
+    requestEdit(last.id);
+    jumpToMessage(last.id);
+    return true;
+  };
 
   const handleSendVoiceMessage = async (req: MessageRequest) => {
     try {
@@ -404,26 +672,60 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
 
   return (
     <div className="cw-root">
-      <div className="cw-shell">
+      <div
+        className="cw-shell"
+        onDragEnter={handleDragEnter}
+        onDragOver={(e) => { if (isDragging) e.preventDefault(); }}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDragging && (
+          <div className="cw-drop-overlay">
+            <Paperclip size={28} />
+            <span>Drop files to attach (up to {MAX_FILES})</span>
+          </div>
+        )}
         {/* Top Header */}
         <header className="cw-header">
-          <div className="cw-header-left">
+          <button
+            type="button"
+            className="cw-back-btn"
+            aria-label="Back to chats"
+            onClick={() => useStore.getState().setActiveConversation(null)}
+          >
+            <ChevronLeft size={22} />
+          </button>
+          <div
+            className="cw-header-left cw-header-left--clickable"
+            role="button"
+            tabIndex={0}
+            title={activeConv?.type === "GROUP" ? "Group info" : "Contact info"}
+            onClick={() => { setThreadRootId(null); setIsDrawerOpen(true); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") setIsDrawerOpen(true);
+            }}
+          >
             {activeConv?.type === "GROUP" ? (
               <div className="cw-group-avatar">
                 <Users size={20} />
               </div>
             ) : (
-              <Avatar name={title} size={40} online={isOnline} />
+              <Avatar name={title} src={otherMember?.profilePicUrl} size={40} online={isOnline} />
             )}
 
             <div className="cw-header-info">
               <h1 className="cw-title">{title}</h1>
               <span className="cw-status">
+                {activeConv?.retentionDays ? (
+                  <span className="cw-retention-tag" title={`Disappearing messages: ${activeConv.retentionDays === 1 ? "24 hours" : `${activeConv.retentionDays} days`}`}>
+                    <Timer size={12} /> {activeConv.retentionDays === 1 ? "24h" : `${activeConv.retentionDays}d`}
+                  </span>
+                ) : null}
                 {activeConv?.type === "GROUP"
                   ? `${activeConv.members.length} members: ${activeConv.members.map((m) => m.name).join(", ")}`
                   : isOnline
                   ? "Online"
-                  : "Offline"}
+                  : formatLastSeen(otherMember ? lastSeenByUserId[otherMember.id] ?? otherMember.lastSeenAt : null)}
               </span>
             </div>
           </div>
@@ -441,7 +743,32 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
               <Search size={18} />
             </button>
 
-            {activeConv?.type === "DIRECT" && otherMember && (
+            {activeConv?.type === "GROUP" && !isReadOnly && (
+              <>
+                <button
+                  className="cw-action-btn"
+                  title="Start group voice call"
+                  disabled={inCall}
+                  onClick={() =>
+                    initiateGroupCall(conversationId, title, activeConv.members.map((m) => m.id), "AUDIO")
+                  }
+                >
+                  <Phone size={18} />
+                </button>
+                <button
+                  className="cw-action-btn cw-action-btn--primary"
+                  title="Start group video call"
+                  disabled={inCall}
+                  onClick={() =>
+                    initiateGroupCall(conversationId, title, activeConv.members.map((m) => m.id), "VIDEO")
+                  }
+                >
+                  <Video size={18} />
+                </button>
+              </>
+            )}
+
+            {activeConv?.type === "DIRECT" && otherMember && !isBlocked && (
               <>
                 <button
                   className="cw-action-btn"
@@ -468,7 +795,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
             <button
               className={`cw-action-btn ${isDrawerOpen ? "cw-action-btn--active" : ""}`}
               title="View details"
-              onClick={() => setIsDrawerOpen(!isDrawerOpen)}
+              onClick={() => { setThreadRootId(null); setIsDrawerOpen(!isDrawerOpen); }}
             >
               <Info size={18} />
             </button>
@@ -529,7 +856,20 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
         )}
 
         {/* Message History Area */}
-        <div className="cw-body">
+        <div className="cw-body" ref={bodyRef} onScroll={handleBodyScroll}>
+          {!isLoading && filteredMessages.length > 0 && !(isSearchOpen && searchQuery) && (
+            <div className="cw-history-edge">
+              {isLoadingOlder ? (
+                <span className="cw-history-loading"><Loader2 size={14} className="spin" /> Loading older messages…</span>
+              ) : hasMore ? (
+                <button type="button" className="cw-history-btn" onClick={() => loadOlder()}>
+                  Load older messages
+                </button>
+              ) : (
+                <span className="cw-history-start">Start of conversation</span>
+              )}
+            </div>
+          )}
           {isLoading ? (
             /* ── Skeleton Loading State ── */
             <div className="cw-skeleton-container">
@@ -564,12 +904,21 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                   <span>{group.date}</span>
                 </div>
                 {group.msgs.map((msg) => (
-                  <MessageBubble
-                    key={msg.id}
-                    message={msg}
-                    isMine={msg.senderId === userId}
-                    onReply={(m) => setReplyMessage(m)}
-                  />
+                  <div key={msg.id} id={`msg-${msg.id}`} className="cw-msg-anchor">
+                    {unreadAnchor?.id === msg.id && (
+                      <div className="cw-unread-divider">
+                        <span>
+                          {unreadAnchor.count} unread message{unreadAnchor.count !== 1 ? "s" : ""}
+                        </span>
+                      </div>
+                    )}
+                    <MessageBubble
+                      message={msg}
+                      isMine={msg.senderId === userId}
+                      onReply={(m) => setReplyMessage(m)}
+                      onOpenThread={(m) => { setIsDrawerOpen(false); setThreadRootId(m.id); }}
+                    />
+                  </div>
                 ))}
               </div>
             ))
@@ -591,7 +940,51 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
           )}
 
           <div ref={bottomRef} />
+
+          {showJump && !isLoading && (
+            <button
+              type="button"
+              className="cw-jump-btn"
+              onClick={() => scrollToBottom()}
+              title="Jump to latest"
+              aria-label="Jump to latest message"
+            >
+              {newWhileAway > 0 && <span className="cw-jump-badge">{newWhileAway}</span>}
+              <ChevronDown size={20} />
+            </button>
+          )}
         </div>
+
+        {/* Scheduled messages for this chat */}
+        {scheduledHere.length > 0 && (
+          <div className="cw-scheduled-bar">
+            <button type="button" className="cw-scheduled-toggle" onClick={() => setShowScheduledList((v) => !v)}>
+              <Clock size={14} /> {scheduledHere.length} scheduled message{scheduledHere.length !== 1 ? "s" : ""}
+              <ChevronDown size={14} style={{ transform: showScheduledList ? "rotate(180deg)" : undefined }} />
+            </button>
+            {showScheduledList && (
+              <ul className="cw-scheduled-list">
+                {scheduledHere.map((s) => (
+                  <li key={s.id}>
+                    <div>
+                      <span className="cw-scheduled-when">{formatWhen(s.sendAt)}</span>
+                      <span className="cw-scheduled-text">{s.content}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await apiDelete(`/api/scheduled/${s.id}`).catch(() => {});
+                        setScheduledHere((list) => list.filter((x) => x.id !== s.id));
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* Input Area */}
         <div className="cw-input-area">
@@ -613,22 +1006,38 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
             </div>
           )}
 
-          {/* Selected file preview pill */}
-          {selectedFile && (
-            <div className="cw-file-pill">
-              <Paperclip size={14} />
-              <span className="cw-file-name">{selectedFile.name}</span>
-              <button
-                type="button"
-                className="cw-file-remove"
-                onClick={() => setSelectedFile(null)}
-              >
-                <X size={14} />
-              </button>
+          {/* Selected files preview pills */}
+          {selectedFiles.length > 0 && (
+            <div className="cw-file-pills">
+              {selectedFiles.map((file, i) => (
+                <div key={`${file.name}-${i}`} className="cw-file-pill">
+                  <Paperclip size={14} />
+                  <span className="cw-file-name">{file.name}</span>
+                  <button
+                    type="button"
+                    className="cw-file-remove"
+                    aria-label={`Remove ${file.name}`}
+                    onClick={() => setSelectedFiles((prev) => prev.filter((_, j) => j !== i))}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
 
-          {isReadOnly ? (
+          {activeConv?.blockedByMe ? (
+            <div className="cw-readonly-bar">
+              You blocked {otherMember?.name ?? "this contact"}.{" "}
+              <button type="button" className="cw-readonly-link" onClick={() => { setThreadRootId(null); setIsDrawerOpen(true); }}>
+                Unblock from contact info
+              </button>
+            </div>
+          ) : activeConv?.blockedMe ? (
+            <div className="cw-readonly-bar">
+              🚫 You can&apos;t send messages to this contact
+            </div>
+          ) : isReadOnly ? (
             <div className="cw-readonly-bar">
               🔒 Only administrators can send messages in this channel
             </div>
@@ -642,18 +1051,53 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
             <form onSubmit={handleSend} className="cw-form">
               <input
                 type="file"
+                multiple
                 ref={fileInputRef}
                 style={{ display: "none" }}
                 onChange={(e) => {
-                  if (e.target.files && e.target.files[0]) {
-                    setSelectedFile(e.target.files[0]);
-                  }
+                  addFiles(e.target.files);
+                  e.target.value = ""; // allow picking the same file again
                 }}
               />
 
+              {/* Phones: one "+" button holds attach / poll / send later */}
+              <div className="cw-more cw-mobile-only">
+                <button
+                  type="button"
+                  className={`cw-input-btn cw-more-btn ${isComposerMenuOpen ? "cw-more-btn--open" : ""}`}
+                  onClick={() => setIsComposerMenuOpen((v) => !v)}
+                  aria-label="More options"
+                  aria-expanded={isComposerMenuOpen}
+                >
+                  <Plus size={22} />
+                </button>
+                {isComposerMenuOpen && (
+                  <>
+                    <div className="cw-more-backdrop" onClick={() => setIsComposerMenuOpen(false)} />
+                    <div className="cw-more-menu" role="menu">
+                      <button type="button" role="menuitem" onClick={() => { setIsComposerMenuOpen(false); fileInputRef.current?.click(); }}>
+                        <span className="cw-more-icon cw-more-icon--file"><Paperclip size={18} /></span> Photo or file
+                      </button>
+                      <button type="button" role="menuitem" onClick={() => { setIsComposerMenuOpen(false); setIsPollModalOpen(true); }}>
+                        <span className="cw-more-icon cw-more-icon--poll"><Vote size={18} /></span> Poll
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={!text.trim() || selectedFiles.length > 0}
+                        onClick={() => { setIsComposerMenuOpen(false); setIsScheduleOpen(true); }}
+                      >
+                        <span className="cw-more-icon cw-more-icon--later"><Clock size={18} /></span>
+                        {text.trim() ? "Send later" : "Send later (type a message first)"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+
               <button
                 type="button"
-                className="cw-input-btn"
+                className="cw-input-btn cw-desktop-only"
                 onClick={() => fileInputRef.current?.click()}
                 title="Attach File"
               >
@@ -662,7 +1106,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
 
               <button
                 type="button"
-                className="cw-input-btn"
+                className="cw-input-btn cw-desktop-only"
                 onClick={() => setIsPollModalOpen(true)}
                 title="Create Poll"
               >
@@ -708,6 +1152,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                   value={text}
                   onChange={handleTextChange}
                   onKeyDown={handleInputKeyDown}
+                  onPaste={handlePaste}
                 />
 
                 {/* Emoji Picker Trigger */}
@@ -730,19 +1175,32 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                 </div>
               </div>
 
+              {/* Phones show the mic only while there's nothing to send (WhatsApp-style) */}
               <button
                 type="button"
-                className="cw-input-btn"
+                className={`cw-input-btn ${hasDraftToSend ? "cw-desktop-only" : ""}`}
                 onClick={() => setIsRecordingVoice(true)}
                 title="Record Voice Note"
+                aria-label="Record voice note"
               >
                 <Mic size={20} />
               </button>
 
               <button
+                type="button"
+                className="cw-input-btn cw-desktop-only"
+                onClick={() => setIsScheduleOpen(true)}
+                disabled={!text.trim() || selectedFiles.length > 0}
+                title={selectedFiles.length > 0 ? "Files can't be scheduled yet" : "Send later"}
+              >
+                <Clock size={19} />
+              </button>
+
+              <button
                 type="submit"
-                disabled={(!text.trim() && !selectedFile) || isUploading}
-                className="cw-send-btn"
+                disabled={(!text.trim() && selectedFiles.length === 0) || isUploading}
+                className={`cw-send-btn ${hasDraftToSend || isUploading ? "" : "cw-desktop-only"}`}
+                aria-label="Send message"
               >
                 {isUploading ? <Loader2 size={18} className="spin" /> : <Send size={18} />}
               </button>
@@ -751,15 +1209,42 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
         </div>
       </div>
 
+      {isScheduleOpen && (
+        <ScheduleMessageModal
+          conversationId={conversationId}
+          initialText={text}
+          onClose={() => setIsScheduleOpen(false)}
+          onScheduled={(s) => {
+            setScheduledHere((list) => [...list, s].sort((a, b) => a.sendAt.localeCompare(b.sendAt)));
+            setText("");
+            setReplyMessage(null);
+            showToast(`Scheduled for ${formatWhen(s.sendAt)}`);
+          }}
+        />
+      )}
+
+      {threadRootId !== null && (
+        <ThreadPanel
+          key={threadRootId}
+          conversationId={conversationId}
+          rootId={threadRootId}
+          canPost={!isReadOnly && !isBlocked}
+          onClose={() => setThreadRootId(null)}
+        />
+      )}
+
       {/* Sliding Info Right Drawer */}
-      {activeConv && (
+      {activeConv && isDrawerOpen && threadRootId === null && (
         <ChatInfoDrawer
+          key={activeConv.id}
           isOpen={isDrawerOpen}
           onClose={() => setIsDrawerOpen(false)}
           conversation={activeConv}
           myUserId={userId}
           onlineUserIds={onlineUserIds}
-          sharedAttachments={sharedAttachments}
+          messages={messages}
+          onOpenSearch={() => setIsSearchOpen(true)}
+          onJumpToMessage={jumpToMessage}
         />
       )}
 
@@ -769,13 +1254,84 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
         }
         .cw-shell {
           flex: 1; display: flex; flex-direction: column; height: 100%; min-width: 0; background: var(--bg-primary);
+          position: relative;
         }
+        .cw-drop-overlay {
+          position: absolute; inset: 8px; z-index: 40; border: 2px dashed var(--accent); border-radius: 16px;
+          background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+          display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem;
+          color: var(--accent); font-weight: 600; pointer-events: none;
+        }
+        .cw-file-pills { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+        .cw-scheduled-bar { border-top: 1px solid var(--border); background: var(--bg-primary); padding: 0.35rem 1.5rem; }
+        .cw-scheduled-toggle {
+          display: inline-flex; align-items: center; gap: 0.35rem; background: none; border: none; cursor: pointer;
+          font-size: 0.78rem; font-weight: 600; color: var(--accent); padding: 0.2rem 0;
+        }
+        .cw-scheduled-list { list-style: none; margin: 0.25rem 0 0.35rem; display: flex; flex-direction: column; gap: 0.3rem; max-height: 160px; overflow-y: auto; }
+        .cw-scheduled-list li {
+          display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.4rem 0.6rem;
+          border: 1px solid var(--border); border-radius: 8px; background: var(--bg-secondary);
+        }
+        .cw-scheduled-list li > div { min-width: 0; display: flex; flex-direction: column; }
+        .cw-scheduled-when { font-size: 0.7rem; font-weight: 700; color: var(--text-muted); }
+        .cw-scheduled-text { font-size: 0.8rem; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cw-scheduled-list button {
+          border: 1px solid var(--border); background: var(--bg-primary); color: var(--danger); font-size: 0.72rem;
+          font-weight: 600; padding: 0.25rem 0.55rem; border-radius: 6px; cursor: pointer; flex-shrink: 0;
+        }
+        .cw-input-btn:disabled { opacity: 0.4; cursor: not-allowed; }
         .cw-header {
           height: 64px; padding: 0 1.5rem; border-bottom: 1px solid var(--border);
           display: flex; align-items: center; justify-content: space-between;
           background: var(--bg-primary); flex-shrink: 0;
         }
         .cw-header-left { display: flex; align-items: center; gap: 0.75rem; min-width: 0; }
+        .cw-back-btn { display: none; background: none; border: none; color: var(--text-secondary); padding: 0.3rem; margin-left: -0.5rem; cursor: pointer; border-radius: 8px; }
+        @media (max-width: 768px) {
+          .cw-back-btn { display: flex; }
+          .cw-header { padding: 0 0.75rem; gap: 0.25rem; }
+          .cw-body { padding: 0.75rem; }
+          .cw-header-actions { gap: 0.15rem; }
+          .cw-status { max-width: 40vw; }
+        }
+        .cw-retention-tag { display: inline-flex; align-items: center; gap: 0.2rem; color: var(--accent); margin-right: 0.35rem; }
+        .cw-header-left--clickable { cursor: pointer; border-radius: 10px; padding: 0.25rem 0.5rem 0.25rem 0.25rem; margin-left: -0.25rem; }
+        .cw-header-left--clickable:hover { background: var(--bg-secondary); }
+        .cw-msg-anchor { display: flex; flex-direction: column; border-radius: 12px; transition: background 0.4s; }
+        .cw-msg-anchor--flash { background: var(--accent-soft); }
+        .cw-history-edge { display: flex; justify-content: center; padding: 0.25rem 0 0.5rem; }
+        .cw-history-btn {
+          background: var(--bg-primary); border: 1px solid var(--border); border-radius: 999px;
+          padding: 0.3rem 0.85rem; font-size: 0.75rem; font-weight: 600; color: var(--accent); cursor: pointer;
+        }
+        .cw-history-btn:hover { background: var(--accent-soft); }
+        .cw-history-loading, .cw-history-start {
+          display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; color: var(--text-faint);
+        }
+        .cw-unread-divider {
+          display: flex; justify-content: center; margin: 0.75rem 0;
+          background: var(--accent-soft); border-radius: 8px; padding: 0.3rem 0;
+        }
+        .cw-unread-divider span {
+          font-size: 0.72rem; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em;
+        }
+        .cw-jump-btn {
+          position: sticky; bottom: 0.5rem; align-self: flex-end; margin-top: -42px; flex-shrink: 0;
+          width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--border);
+          background: var(--bg-primary); color: var(--text-secondary); box-shadow: var(--shadow-md, 0 4px 14px rgba(0,0,0,0.15));
+          display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 5;
+        }
+        .cw-jump-btn:hover { color: var(--accent); }
+        .cw-jump-badge {
+          position: absolute; top: -6px; right: -4px; min-width: 20px; height: 20px; padding: 0 5px;
+          border-radius: 999px; background: var(--accent); color: #fff; font-size: 0.6875rem; font-weight: 700;
+          display: flex; align-items: center; justify-content: center;
+        }
+        .cw-readonly-link {
+          background: none; border: none; padding: 0; color: var(--accent); font-weight: 600;
+          cursor: pointer; font-size: inherit;
+        }
         .cw-group-avatar {
           width: 40px; height: 40px; border-radius: 12px;
           background: linear-gradient(135deg, var(--accent-muted), var(--accent-deep));
@@ -829,7 +1385,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
 
         .cw-body {
           flex: 1; overflow-y: auto; overflow-x: hidden; padding: 1.5rem;
-          display: flex; flex-direction: column; background: var(--bg-secondary);
+          display: flex; flex-direction: column; background: var(--chat-wallpaper, var(--bg-secondary));
         }
 
         /* Skeleton loading */
@@ -964,6 +1520,41 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
         }
         .cw-send-btn:hover:not(:disabled) { background: var(--accent-hover); }
         .cw-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .cw-input-wrapper { min-width: 0; }
+
+        /* ── Composer: phone layout ── */
+        .cw-mobile-only { display: none; }
+        .cw-more { position: relative; }
+        .cw-more-btn { transition: transform 0.15s; }
+        .cw-more-btn--open { transform: rotate(45deg); color: var(--accent); }
+        .cw-more-backdrop { position: fixed; inset: 0; z-index: 40; }
+        .cw-more-menu {
+          position: absolute; bottom: calc(100% + 10px); left: 0; z-index: 41; min-width: 220px; padding: 6px;
+          background: var(--bg-primary); border: 1px solid var(--border); border-radius: 14px;
+          box-shadow: var(--shadow-lg, 0 12px 32px rgba(0,0,0,0.18)); display: flex; flex-direction: column;
+        }
+        .cw-more-menu button {
+          display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem 0.65rem; border: none; background: none;
+          border-radius: 10px; font-size: 0.9rem; font-weight: 500; color: var(--text-primary); text-align: left; cursor: pointer;
+        }
+        .cw-more-menu button:hover:not(:disabled) { background: var(--bg-secondary); }
+        .cw-more-menu button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .cw-more-icon { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
+        .cw-more-icon--file { background: #7c3aed; }
+        .cw-more-icon--poll { background: #0891b2; }
+        .cw-more-icon--later { background: #d97706; }
+
+        @media (max-width: 768px) {
+          .cw-desktop-only { display: none !important; }
+          .cw-mobile-only { display: flex; }
+          .cw-input-area { padding: 0.5rem 0.5rem calc(0.5rem + env(safe-area-inset-bottom)); gap: 0.5rem; }
+          .cw-form { gap: 0.35rem; }
+          .cw-input-btn { padding: 0.45rem; }
+          .cw-text-input { padding: 0.65rem 2.5rem 0.65rem 0.85rem; border-radius: 22px; font-size: 1rem; }
+          .cw-send-btn { width: 44px; height: 44px; border-radius: 50%; flex-shrink: 0; }
+          .cw-scheduled-bar { padding: 0.35rem 0.75rem; }
+          .cw-file-name { max-width: 140px; }
+        }
         .spin { animation: spin 0.7s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
       `}</style>

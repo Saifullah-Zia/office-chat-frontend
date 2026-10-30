@@ -3,8 +3,12 @@
  * Creates a pleasant, modern dual-tone chime without external audio files.
  */
 
+import { isSoundEnabled } from "./preferences";
+import { shouldAlert } from "./notify";
+
 export function playMessageChime(): void {
   if (typeof window === "undefined") return;
+  if (!isSoundEnabled() || !shouldAlert()) return;
 
   try {
     const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;

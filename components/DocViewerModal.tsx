@@ -2,6 +2,7 @@
 
 import React, { useEffect } from "react";
 import { X, Download, FileText, ExternalLink } from "lucide-react";
+import { downloadHref } from "@/lib/media";
 
 interface DocViewerModalProps {
   url: string;
@@ -32,7 +33,7 @@ export default function DocViewerModal({ url, name, isImage, isPdf, onClose }: D
 
           <div className="dvm-actions">
             <a
-              href={url}
+              href={downloadHref(url)}
               download={name}
               target="_blank"
               rel="noopener noreferrer"
@@ -73,7 +74,7 @@ export default function DocViewerModal({ url, name, isImage, isPdf, onClose }: D
               <FileText size={48} className="dvm-unsupported-icon" />
               <p className="dvm-unsupported-title">Preview not available for this file type</p>
               <p className="dvm-unsupported-sub">Click download to view this file on your computer.</p>
-              <a href={url} download={name} className="dvm-download-cta">
+              <a href={downloadHref(url)} download={name} className="dvm-download-cta">
                 <Download size={16} /> Download {name}
               </a>
             </div>

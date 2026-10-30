@@ -38,7 +38,9 @@ export default function IncomingCallOverlay({
 
         <h3 className="ico-caller">{signal.fromUserName}</h3>
         <p className="ico-sub">
-          Incoming {isVideo ? "Video" : "Voice"} Call...
+          {signal.isGroup
+            ? `Group ${isVideo ? "video" : "voice"} call · ${signal.groupName ?? "Group"}`
+            : `Incoming ${isVideo ? "Video" : "Voice"} Call...`}
         </p>
 
         <div className="ico-actions">

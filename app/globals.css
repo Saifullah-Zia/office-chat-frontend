@@ -157,6 +157,30 @@
   --auth-text-muted: #64748b;
 }
 
+/* ── Display preferences (Settings → Appearance) ──────────────────── */
+html[data-font-size="small"] { font-size: 14px; }
+html[data-font-size="large"] { font-size: 18px; }
+html[data-font-size="xlarge"] { font-size: 20px; }
+
+html[data-wallpaper="dots"] {
+  --chat-wallpaper: radial-gradient(circle, color-mix(in srgb, var(--text-faint) 22%, transparent) 1px, transparent 1.5px) 0 0 / 18px 18px, var(--bg-secondary);
+}
+html[data-wallpaper="grid"] {
+  --chat-wallpaper:
+    linear-gradient(color-mix(in srgb, var(--text-faint) 12%, transparent) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(90deg, color-mix(in srgb, var(--text-faint) 12%, transparent) 1px, transparent 1px) 0 0 / 24px 24px,
+    var(--bg-secondary);
+}
+html[data-wallpaper="sky"] {
+  --chat-wallpaper: linear-gradient(160deg, color-mix(in srgb, #38bdf8 14%, var(--bg-secondary)), var(--bg-secondary) 60%);
+}
+html[data-wallpaper="sunset"] {
+  --chat-wallpaper: linear-gradient(160deg, color-mix(in srgb, #fb923c 14%, var(--bg-secondary)), color-mix(in srgb, #e879f9 10%, var(--bg-secondary)));
+}
+html[data-wallpaper="mint"] {
+  --chat-wallpaper: linear-gradient(160deg, color-mix(in srgb, #34d399 14%, var(--bg-secondary)), var(--bg-secondary) 70%);
+}
+
 /* ── Base Reset ────────────────────────────────────────────────────── */
 *, *::before, *::after {
   margin: 0;

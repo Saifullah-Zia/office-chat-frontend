@@ -59,5 +59,6 @@ export default function ChatPage() {
     );
   }
 
-  return <ChatWindow conversationId={activeConversationId} />;
+  // Keyed so each chat gets fresh local state (composer text comes from its own draft).
+  return <ChatWindow key={activeConversationId} conversationId={activeConversationId} />;
 }

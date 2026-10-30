@@ -1,5 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
 import { getToken, clearAuth } from "@/lib/auth";
+import { showToast } from "@/lib/toast";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -40,9 +41,21 @@ api.interceptors.response.use(
         window.location.href = "/login";
       }
     }
+
+    // Rate limits and oversized uploads: tell the user instead of failing silently.
+    const status = error.response?.status;
+    if ((status === 429 || status === 413) && !url.includes("/link-preview")) {
+      showToast(apiErrorMessage(error) ?? (status === 429 ? "Slow down a little and try again." : "That file is too large."));
+    }
     return Promise.reject(error);
   },
 );
+
+/** The server's error text (GlobalExceptionHandler puts it in `error`). */
+export function apiErrorMessage(err: unknown): string | null {
+  const data = (err as AxiosError<{ error?: string; message?: string }>)?.response?.data;
+  return data?.error ?? data?.message ?? null;
+}
 
 // ── Convenience helpers ─────────────────────────────────────────────────
 export const apiGet = <T>(url: string, params?: object) =>

@@ -5,6 +5,7 @@ import {
   UserResponse,
 } from "@/types";
 import { getUser } from "@/lib/auth";
+import { apiGet, apiPost, apiDelete } from "@/lib/api";
 
 /**
  * Zustand store for runtime UI state ONLY.
@@ -35,6 +36,7 @@ interface AppState {
   conversations: ConversationResponse[];
   setConversations: (convs: ConversationResponse[]) => void;
   upsertConversation: (conv: ConversationResponse) => void;
+  removeConversation: (convId: number) => void;
   clearUnread: (convId: number) => void;
   decrementUnread: (convId: number) => void;
   incrementUnread: (convId: number) => void;
@@ -53,9 +55,35 @@ interface AppState {
   typingByConv: Record<number, Set<string>>;
   setTyping: (convId: number, userName: string, isTyping: boolean) => void;
 
-  // Starred messages
+  // Starred messages (stored server-side per user)
+  starredMessages: MessageResponse[];
   starredMessageIds: Set<number>;
-  toggleStarMessage: (id: number) => void;
+  loadStarred: () => Promise<void>;
+  toggleStarMessage: (msg: MessageResponse) => Promise<void>;
+
+  // Older history loaded on scroll-up
+  prependMessages: (convId: number, msgs: MessageResponse[]) => void;
+
+  // Last seen timestamps (ISO) for users who are offline
+  lastSeenByUserId: Record<number, string>;
+  setLastSeen: (userId: number, iso: string) => void;
+
+  // Unsent text per conversation (kept in this browser)
+  drafts: Record<number, string>;
+  setDraft: (convId: number, text: string) => void;
+
+  // Keyboard "↑ to edit last message": the bubble with this id enters edit mode
+  editRequest: { id: number; nonce: number } | null;
+  requestEdit: (messageId: number) => void;
+
+  // Thread replies, keyed by the thread's root message id
+  threadMessagesByRoot: Record<number, MessageResponse[]>;
+  setThreadMessages: (rootId: number, msgs: MessageResponse[]) => void;
+
+  // Open a chat scrolled to a specific message (search results, mentions, tasks, reminders)
+  pendingJump: { conversationId: number; messageId: number } | null;
+  openChatAt: (conversationId: number, messageId?: number | null) => void;
+  clearPendingJump: () => void;
 
   // Work presence status (e.g. In a Meeting, Lunch, Focus Mode)
   userStatus: { emoji: string; text: string } | null;
@@ -100,10 +128,8 @@ export const useStore = create<AppState>()((set) => ({
         localStorage.removeItem("office_user_status");
         const currentId = user ? user.userId : null;
         if (currentId) {
-          const savedStarred = localStorage.getItem("office_starred_msgs_" + currentId) || localStorage.getItem("office_starred_msgs");
-          if (savedStarred) {
-            set({ starredMessageIds: new Set(JSON.parse(savedStarred)) });
-          }
+          const savedDrafts = localStorage.getItem("office_drafts_" + currentId);
+          if (savedDrafts) set({ drafts: JSON.parse(savedDrafts) });
           const savedStatus = localStorage.getItem("office_user_status_" + currentId);
           if (savedStatus) {
             const parsed = JSON.parse(savedStatus);
@@ -123,13 +149,15 @@ export const useStore = create<AppState>()((set) => ({
   setUsers: (users) =>
     set((s) => {
       const nextStatuses = { ...s.statusesByUserId };
+      const nextLastSeen = { ...s.lastSeenByUserId };
       users.forEach((u) => {
         if (u.workStatus) {
           const parsed = parseWorkStatus(u.workStatus);
           if (parsed) nextStatuses[u.id] = parsed;
         }
+        if (u.lastSeenAt && !nextLastSeen[u.id]) nextLastSeen[u.id] = u.lastSeenAt;
       });
-      return { users, statusesByUserId: nextStatuses };
+      return { users, statusesByUserId: nextStatuses, lastSeenByUserId: nextLastSeen };
     }),
 
   onlineUserIds: new Set<number>(),
@@ -147,15 +175,17 @@ export const useStore = create<AppState>()((set) => ({
   setConversations: (conversations) =>
     set((s) => {
       const nextStatuses = { ...s.statusesByUserId };
+      const nextLastSeen = { ...s.lastSeenByUserId };
       conversations.forEach((c) => {
         c.members?.forEach((m) => {
           if (m.workStatus) {
             const parsed = parseWorkStatus(m.workStatus);
             if (parsed) nextStatuses[m.id] = parsed;
           }
+          if (m.lastSeenAt && !nextLastSeen[m.id]) nextLastSeen[m.id] = m.lastSeenAt;
         });
       });
-      return { conversations, statusesByUserId: nextStatuses };
+      return { conversations, statusesByUserId: nextStatuses, lastSeenByUserId: nextLastSeen };
     }),
   upsertConversation: (conv) =>
     set((s) => {
@@ -168,6 +198,16 @@ export const useStore = create<AppState>()((set) => ({
         };
       }
       return { conversations: [conv, ...s.conversations] };
+    }),
+  removeConversation: (convId) =>
+    set((s) => {
+      const nextMessages = { ...s.messagesByConv };
+      delete nextMessages[convId];
+      return {
+        conversations: s.conversations.filter((c) => c.id !== convId),
+        messagesByConv: nextMessages,
+        activeConversationId: s.activeConversationId === convId ? null : s.activeConversationId,
+      };
     }),
   clearUnread: (convId) =>
     set((s) => ({
@@ -200,6 +240,24 @@ export const useStore = create<AppState>()((set) => ({
     })),
   addMessage: (msg) =>
     set((s) => {
+      // Thread replies live in their thread, not the main timeline.
+      if (msg.threadRootId) {
+        const list = s.threadMessagesByRoot[msg.threadRootId];
+        if (!list) return {}; // thread not open/loaded: the root's reply count update covers it
+        const exists = list.some((m) => m.id === msg.id);
+        return {
+          threadMessagesByRoot: {
+            ...s.threadMessagesByRoot,
+            [msg.threadRootId]: exists ? list.map((m) => (m.id === msg.id ? msg : m)) : [...list, msg],
+          },
+        };
+      }
+      // Keep an open thread's root in sync (reply count, edits, reactions).
+      const openThread = s.threadMessagesByRoot[msg.id];
+      const threadPatch = openThread
+        ? { threadMessagesByRoot: { ...s.threadMessagesByRoot, [msg.id]: openThread.map((m) => (m.id === msg.id ? msg : m)) } }
+        : {};
+
       const current = s.messagesByConv[msg.conversationId] ?? [];
       const exists = current.some((m) => m.id === msg.id);
       const updated = exists
@@ -230,6 +288,7 @@ export const useStore = create<AppState>()((set) => ({
       );
 
       return {
+        ...threadPatch,
         messagesByConv: {
           ...s.messagesByConv,
           [msg.conversationId]: updated,
@@ -255,19 +314,92 @@ export const useStore = create<AppState>()((set) => ({
       return { typingByConv: { ...s.typingByConv, [convId]: set_ } };
     }),
 
+  starredMessages: [],
   starredMessageIds: new Set<number>(),
-  toggleStarMessage: (id) =>
+  loadStarred: async () => {
+    // One-time migration of stars that older versions kept only in this browser.
+    if (typeof window !== "undefined") {
+      try {
+        const currentId = useStore.getState().userId;
+        const keys = ["office_starred_msgs", currentId ? "office_starred_msgs_" + currentId : ""].filter(Boolean);
+        for (const key of keys) {
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
+          const ids: number[] = JSON.parse(raw);
+          await Promise.all(ids.map((id) => apiPost(`/api/messages/${id}/star`).catch(() => {})));
+          localStorage.removeItem(key);
+        }
+      } catch {}
+    }
+    try {
+      const list = await apiGet<MessageResponse[]>("/api/messages/starred");
+      set({ starredMessages: list, starredMessageIds: new Set(list.map((m) => m.id)) });
+    } catch (err) {
+      console.error("Failed to load starred messages:", err);
+    }
+  },
+  toggleStarMessage: async (msg) => {
+    const wasStarred = useStore.getState().starredMessageIds.has(msg.id);
+    const apply = (starred: boolean) =>
+      set((s) => {
+        const ids = new Set(s.starredMessageIds);
+        if (starred) ids.add(msg.id);
+        else ids.delete(msg.id);
+        const list = s.starredMessages.filter((m) => m.id !== msg.id);
+        return { starredMessageIds: ids, starredMessages: starred ? [msg, ...list] : list };
+      });
+
+    apply(!wasStarred); // optimistic
+    try {
+      if (wasStarred) await apiDelete(`/api/messages/${msg.id}/star`);
+      else await apiPost(`/api/messages/${msg.id}/star`);
+    } catch (err) {
+      console.error("Failed to update star:", err);
+      apply(wasStarred); // roll back
+    }
+  },
+
+  prependMessages: (convId, msgs) =>
     set((s) => {
-      const next = new Set(s.starredMessageIds);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      if (typeof window !== "undefined") {
+      const current = s.messagesByConv[convId] ?? [];
+      const existing = new Set(current.map((m) => m.id));
+      const older = msgs.filter((m) => !existing.has(m.id));
+      return { messagesByConv: { ...s.messagesByConv, [convId]: [...older, ...current] } };
+    }),
+
+  lastSeenByUserId: {},
+  setLastSeen: (userId, iso) =>
+    set((s) => ({ lastSeenByUserId: { ...s.lastSeenByUserId, [userId]: iso } })),
+
+  drafts: {},
+  setDraft: (convId, text) =>
+    set((s) => {
+      if ((s.drafts[convId] ?? "") === text) return {};
+      const next = { ...s.drafts };
+      if (text.trim()) next[convId] = text;
+      else delete next[convId];
+      if (typeof window !== "undefined" && s.userId) {
         try {
-          localStorage.setItem("office_starred_msgs", JSON.stringify(Array.from(next)));
+          localStorage.setItem("office_drafts_" + s.userId, JSON.stringify(next));
         } catch {}
       }
-      return { starredMessageIds: next };
+      return { drafts: next };
     }),
+
+  editRequest: null,
+  requestEdit: (messageId) => set({ editRequest: { id: messageId, nonce: Date.now() } }),
+
+  threadMessagesByRoot: {},
+  setThreadMessages: (rootId, msgs) =>
+    set((s) => ({ threadMessagesByRoot: { ...s.threadMessagesByRoot, [rootId]: msgs } })),
+
+  pendingJump: null,
+  openChatAt: (conversationId, messageId) =>
+    set({
+      activeConversationId: conversationId,
+      pendingJump: messageId ? { conversationId, messageId } : null,
+    }),
+  clearPendingJump: () => set({ pendingJump: null }),
 
   userStatus: null,
   statusesByUserId: {},

@@ -5,6 +5,8 @@ import { X, Shield, ShieldOff, UserX, UserCheck, ChevronDown } from "lucide-reac
 import { apiGet, apiDelete, apiPut } from "@/lib/api";
 import { UserResponse, Role } from "@/types";
 import Avatar from "./Avatar";
+import AdminReports from "./AdminReports";
+import AdminAudit from "./AdminAudit";
 
 interface AdminPanelProps {
   open: boolean;
@@ -18,6 +20,15 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [filter, setFilter] = useState<"all" | "active" | "inactive">("all");
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [section, setSection] = useState<"users" | "reports" | "audit">("users");
+  const [openReports, setOpenReports] = useState(0);
+
+  useEffect(() => {
+    if (!open) return;
+    apiGet<{ open: number }>("/api/admin/reports/count")
+      .then((r) => setOpenReports(r.open))
+      .catch(() => {});
+  }, [open]);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -99,6 +110,29 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
           <button className="ap-close" onClick={onClose}><X size={18} /></button>
         </div>
 
+        {/* Section switcher */}
+        <div className="ap-sections" role="tablist">
+          {([
+            ["users", "Users"],
+            ["reports", openReports > 0 ? `Reports (${openReports})` : "Reports"],
+            ["audit", "Audit log"],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              role="tab"
+              aria-selected={section === key}
+              className={`ap-section-btn ${section === key ? "ap-section-btn--on" : ""}`}
+              onClick={() => setSection(key)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {section === "reports" && <AdminReports onCountChange={setOpenReports} />}
+        {section === "audit" && <AdminAudit />}
+
+        {section === "users" && (<>
         {/* Stats bar */}
         <div className="ap-stats">
           <div className="ap-stat">
@@ -216,9 +250,19 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
             ))
           )}
         </div>
+        </>)}
       </div>
 
       <style jsx>{`
+        .ap-sections {
+          display: flex; gap: 4px; margin: 0.75rem 1.25rem 0; padding: 3px; border-radius: 10px;
+          background: var(--bg-tertiary);
+        }
+        .ap-section-btn {
+          flex: 1; border: none; background: transparent; padding: 0.45rem; border-radius: 8px; cursor: pointer;
+          font-size: 0.8rem; font-weight: 600; color: var(--text-muted);
+        }
+        .ap-section-btn--on { background: var(--bg-primary); color: var(--accent); box-shadow: var(--shadow-sm); }
         .ap-backdrop {
           position: fixed; inset: 0; z-index: 999;
           background: var(--bg-overlay);

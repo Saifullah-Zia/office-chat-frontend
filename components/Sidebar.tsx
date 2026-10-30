@@ -1,20 +1,32 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   MessageSquare, Users, Search, LogOut, Plus, UsersRound, Moon, Sun, BellOff, Star, X, Shield,
+  Pin, Archive, ArchiveRestore, MoreVertical, Phone, PhoneIncoming, PhoneOutgoing, PhoneMissed, Video,
+  Settings, ChevronLeft, CheckCheck, Bell, Hash,
 } from "lucide-react";
+import ChannelBrowser from "./ChannelBrowser";
 import { useStore } from "@/lib/store";
 import { apiGet, apiPost, apiPut } from "@/lib/api";
-import { ConversationResponse, UserResponse, PresenceEvent, MemberResponse, MessageResponse } from "@/types";
+import {
+  ConversationResponse, UserResponse, PresenceEvent, MemberResponse, MessageResponse, CallResponse,
+  ReminderView, TaskView,
+} from "@/types";
 import { subscribe, Topics, disconnectStomp } from "@/lib/socket";
 import { clearAuth } from "@/lib/auth";
+import { playMessageChime } from "@/lib/sound";
+import { desktopNotify } from "@/lib/notify";
+import { showToast } from "@/lib/toast";
+import ActivityPanel, { ActivityTab } from "./ActivityPanel";
 import Avatar from "./Avatar";
 import AddUserModal from "./AddUserModal";
 import AdminPanel from "./AdminPanel";
 import CreateGroupModal from "./CreateGroupModal";
+import SettingsModal from "./SettingsModal";
 import { useTheme } from "@/hooks/useTheme";
+import { useCallContext } from "@/context/CallContext";
 
 /* ── helpers ──────────────────────────────────────────────────────────── */
 
@@ -43,6 +55,18 @@ function relativeTime(iso?: string): string {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+function callDuration(call: CallResponse): string {
+  if (!call.answeredAt || !call.endedAt) return "";
+  const secs = Math.max(0, Math.round((new Date(call.endedAt).getTime() - new Date(call.answeredAt).getTime()) / 1000));
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return m > 0 ? `${m}:${String(s).padStart(2, "0")}` : `${s}s`;
+}
+
+function isMutedConv(conv: ConversationResponse): boolean {
+  return !!conv.mutedUntil && new Date(conv.mutedUntil).getTime() > Date.now();
+}
+
 const STATUS_PRESETS = [
   { emoji: "🟢", text: "Available" },
   { emoji: "🗓️", text: "In a Meeting" },
@@ -55,7 +79,74 @@ const STATUS_PRESETS = [
 
 export default function Sidebar() {
   const router = useRouter();
-  const { theme, toggleTheme } = useTheme();
+  const { theme, setTheme, toggleTheme } = useTheme();
+  const { initiateCall } = useCallContext();
+  const drafts             = useStore((s) => s.drafts);
+  const upsertConversation = useStore((s) => s.upsertConversation);
+  const [showArchived, setShowArchived] = useState(false);
+  const [menuConvId, setMenuConvId]     = useState<number | null>(null);
+  const [calls, setCalls]               = useState<CallResponse[] | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [activityTab, setActivityTab]   = useState<ActivityTab | null>(null);
+  const [isChannelsOpen, setIsChannelsOpen] = useState(false);
+  const [activityCount, setActivityCount] = useState(0);
+  const activityUserId = useStore((s) => s.userId);
+
+  /* ── activity badge: unseen mentions + due reminders + open tasks assigned by others ── */
+  const refreshActivity = useCallback(async () => {
+    const userId = activityUserId;
+    if (!userId) return;
+    try {
+      const [mentions, reminders, tasks] = await Promise.all([
+        apiGet<MessageResponse[]>("/api/messages/mentions", { limit: 50 }),
+        apiGet<ReminderView[]>("/api/reminders"),
+        apiGet<TaskView[]>("/api/tasks", { scope: "assigned" }),
+      ]);
+      let seen = 0;
+      try { seen = new Date(localStorage.getItem(`office_mentions_seen_${userId}`) ?? 0).getTime() || 0; } catch {}
+      const unseenMentions = mentions.filter((m) => new Date(m.createdAt).getTime() > seen).length;
+      const dueReminders = reminders.filter((r) => r.status === "FIRED").length;
+      const openFromOthers = tasks.filter((t) => t.status === "OPEN" && t.createdBy !== userId).length;
+      setActivityCount(unseenMentions + dueReminders + openFromOthers);
+    } catch {}
+  }, [activityUserId]);
+
+  useEffect(() => {
+    // Initial badge count; a fetch callback, not a synchronous setState.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    refreshActivity();
+  }, [refreshActivity]);
+
+  /* ── live reminders & task assignments (private queues) ───────────── */
+  useEffect(() => {
+    if (!activityUserId) return;
+    let subR: { unsubscribe: () => void } | null = null;
+    let subT: { unsubscribe: () => void } | null = null;
+    (async () => {
+      try {
+        subR = await subscribe("/user/queue/reminders", (frame) => {
+          const r: ReminderView = JSON.parse(frame.body);
+          const text = r.note || (r.messageSnippet ? `${r.messageSender}: ${r.messageSnippet}` : "Reminder");
+          showToast(`⏰ Reminder: ${text}`);
+          playMessageChime();
+          desktopNotify("⏰ Reminder", text, {
+            tag: `reminder-${r.id}`,
+            onClick: () => r.conversationId && useStore.getState().openChatAt(r.conversationId, r.messageId),
+          });
+          refreshActivity();
+        });
+        subT = await subscribe("/user/queue/tasks", (frame) => {
+          const t: TaskView = JSON.parse(frame.body);
+          showToast(`📋 ${t.createdByName} assigned you a task: ${t.title}`);
+          desktopNotify(`New task from ${t.createdByName}`, t.title, { tag: `task-${t.id}` });
+          refreshActivity();
+        });
+      } catch (err) {
+        console.error("Activity subscription error:", err);
+      }
+    })();
+    return () => { subR?.unsubscribe(); subT?.unsubscribe(); };
+  }, [activityUserId, refreshActivity]);
 
   const userId    = useStore((s) => s.userId);
   const userName  = useStore((s) => s.userName);
@@ -78,11 +169,12 @@ export default function Sidebar() {
   const setUserStatus       = useStore((s) => s.setUserStatus);
   const setStatusForUser    = useStore((s) => s.setStatusForUser);
   const setGlobalSearchOpen = useStore((s) => s.setGlobalSearchOpen);
-  const starredMessageIds   = useStore((s) => s.starredMessageIds);
-  const messagesByConv      = useStore((s) => s.messagesByConv);
+  const starredMessages     = useStore((s) => s.starredMessages);
+  const loadStarred         = useStore((s) => s.loadStarred);
+  const setLastSeen         = useStore((s) => s.setLastSeen);
   const statusesByUserId    = useStore((s) => s.statusesByUserId);
 
-  const [tab, setTab]                     = useState<"chats" | "directory" | "starred">("chats");
+  const [tab, setTab]                     = useState<"chats" | "directory" | "starred" | "calls">("chats");
   const [search, setSearch]               = useState("");
   const [isAddUserOpen, setIsAddUserOpen] = useState(false);
   const [isGroupOpen, setIsGroupOpen]     = useState(false);
@@ -104,7 +196,9 @@ export default function Sidebar() {
     apiGet<number[]>("/api/presence/online")
       .then((ids) => { if (Array.isArray(ids)) initOnline(ids); })
       .catch(console.error);
-  }, [setConversations, setUsers, initOnline, setActiveConversation]);
+
+    loadStarred();
+  }, [setConversations, setUsers, initOnline, setActiveConversation, loadStarred]);
 
   /* ── presence websocket ──────────────────────────────────────────── */
   useEffect(() => {
@@ -114,14 +208,62 @@ export default function Sidebar() {
         sub = await subscribe(Topics.presence(), (frame) => {
           const ev: PresenceEvent = JSON.parse(frame.body);
           if (ev.status === "ONLINE") setOnline(ev.userId);
-          else setOffline(ev.userId);
+          else {
+            setOffline(ev.userId);
+            setLastSeen(ev.userId, ev.lastSeenAt ?? new Date().toISOString());
+          }
         });
       } catch (err) {
         console.error("Presence subscription error:", err);
       }
     })();
     return () => { sub?.unsubscribe(); };
-  }, [setOnline, setOffline]);
+  }, [setOnline, setOffline, setLastSeen]);
+
+  /* ── new messages in ANY of my chats (private queue) ─────────────── */
+  useEffect(() => {
+    if (!userId) return;
+    let sub: { unsubscribe: () => void } | null = null;
+    (async () => {
+      try {
+        sub = await subscribe("/user/queue/messages", (frame) => {
+          const msg: MessageResponse = JSON.parse(frame.body);
+          const state = useStore.getState();
+          // The open chat handles its own messages via the conversation topic.
+          if (msg.conversationId === state.activeConversationId) return;
+
+          const conv = state.conversations.find((c) => c.id === msg.conversationId);
+          if (!conv) {
+            // New chat, or one I had deleted that a message brought back.
+            apiGet<ConversationResponse>(`/api/conversations/${msg.conversationId}`)
+              .then((c) => state.upsertConversation(c))
+              .catch(() => {});
+          } else {
+            state.addMessage(msg);
+            if (msg.senderId !== userId) state.incrementUnread(msg.conversationId);
+          }
+
+          if (msg.senderId === userId) return;
+          const me = (useStore.getState().userName ?? "").toLowerCase();
+          const text = (msg.content ?? "").toLowerCase();
+          const mentionsMe = (me && (text.includes(`@${me}`) || text.startsWith(`replying to ${me}:`)))
+            || (conv?.type === "GROUP" && (text.includes("@all") || text.includes("@here")));
+          if (mentionsMe) setActivityCount((n) => n + 1);
+          // Mentions still alert in muted chats (like WhatsApp); plain messages don't.
+          if (conv && isMutedConv(conv) && !mentionsMe) return;
+          playMessageChime();
+          desktopNotify(
+            conv?.type === "GROUP" ? `${msg.senderName} · ${conv.name ?? "Group"}` : msg.senderName,
+            msg.content || "Sent an attachment",
+            { tag: `conv-${msg.conversationId}`, onClick: () => useStore.getState().openChatAt(msg.conversationId, msg.id) }
+          );
+        });
+      } catch (err) {
+        console.error("Message queue subscription error:", err);
+      }
+    })();
+    return () => { sub?.unsubscribe(); };
+  }, [userId]);
 
   /* ── user status websocket ────────────────────────────────────────── */
   useEffect(() => {
@@ -152,17 +294,85 @@ export default function Sidebar() {
   }, [userId, setStatusForUser]);
 
   /* ── derived data ────────────────────────────────────────────────── */
-  const sortedConvs = useMemo(() => {
-    const filtered = conversations.filter((c) => {
+  const { sortedConvs, archivedCount, archivedUnread } = useMemo(() => {
+    const matches = conversations.filter((c) => {
       const name = getDisplayName(c, userId);
       return name.toLowerCase().includes(search.toLowerCase());
     });
-    return filtered.sort((a, b) => {
-      const tA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
-      const tB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
-      return tB - tA;
-    });
-  }, [conversations, search, userId]);
+    const archived = conversations.filter((c) => c.archived);
+    const list = matches
+      .filter((c) => (showArchived ? c.archived : !c.archived))
+      .sort((a, b) => {
+        if (!showArchived && !!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+        const tA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+        const tB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+        return tB - tA;
+      });
+    return {
+      sortedConvs: list,
+      archivedCount: archived.length,
+      archivedUnread: archived.filter((c) => c.unreadCount > 0).length,
+    };
+  }, [conversations, search, userId, showArchived]);
+
+  /* ── keyboard: Alt+↑/↓ switches chats, Ctrl+/ shows shortcuts ───── */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "/") {
+        e.preventDefault();
+        setIsSettingsOpen(true);
+        return;
+      }
+      if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+      if (sortedConvs.length === 0) return;
+      e.preventDefault();
+      const idx = sortedConvs.findIndex((c) => c.id === activeConversationId);
+      const next =
+        idx === -1 ? 0 : e.key === "ArrowDown" ? Math.min(idx + 1, sortedConvs.length - 1) : Math.max(idx - 1, 0);
+      setActiveConversation(sortedConvs[next].id);
+      setTab("chats");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sortedConvs, activeConversationId, setActiveConversation]);
+
+  /* ── call log (loaded when the Calls tab opens) ──────────────────── */
+  const openCallsTab = () => {
+    setTab("calls");
+    apiGet<CallResponse[]>("/api/calls/history")
+      .then(setCalls)
+      .catch((err) => {
+        console.error("Failed to load call history:", err);
+        setCalls([]);
+      });
+  };
+
+  /* ── chat row actions ─────────────────────────────────────────────── */
+  const handlePinToggle = async (conv: ConversationResponse) => {
+    setMenuConvId(null);
+    try {
+      upsertConversation(await apiPut<ConversationResponse>(`/api/conversations/${conv.id}/pin`, { pinned: !conv.pinned }));
+    } catch (err) {
+      console.error("Failed to pin chat:", err);
+      alert("Couldn't pin this chat. You can pin up to 5 chats.");
+    }
+  };
+
+  const handleArchiveToggle = async (conv: ConversationResponse) => {
+    setMenuConvId(null);
+    try {
+      upsertConversation(await apiPut<ConversationResponse>(`/api/conversations/${conv.id}/archive`, { archived: !conv.archived }));
+      if (conv.id === activeConversationId && !conv.archived) setActiveConversation(null);
+    } catch (err) {
+      console.error("Failed to archive chat:", err);
+    }
+  };
+
+  const handleMarkRead = async (conv: ConversationResponse) => {
+    setMenuConvId(null);
+    useStore.getState().clearUnread(conv.id);
+    apiPost(`/api/conversations/${conv.id}/read`).catch(() => {});
+  };
 
   const filteredUsers = useMemo(() =>
     users.filter(
@@ -175,25 +385,19 @@ export default function Sidebar() {
     [users, search, userId]
   );
 
-  const starredList = useMemo(() => {
-    const list: { convId: number; convName: string; msg: MessageResponse }[] = [];
-    Object.entries(messagesByConv).forEach(([convIdStr, msgs]) => {
-      const convId = Number(convIdStr);
-      const conv = conversations.find((c) => c.id === convId);
-      const convName = conv
-        ? conv.type === "GROUP"
-          ? conv.name ?? "Group"
-          : conv.members.find((m) => m.id !== userId)?.name ?? "Direct"
-        : "Chat";
-
-      msgs.forEach((m) => {
-        if (starredMessageIds.has(m.id)) {
-          list.push({ convId, convName, msg: m });
-        }
-      });
-    });
-    return list;
-  }, [messagesByConv, starredMessageIds, conversations, userId]);
+  const starredList = useMemo(
+    () =>
+      starredMessages.map((msg) => {
+        const conv = conversations.find((c) => c.id === msg.conversationId);
+        const convName = conv
+          ? conv.type === "GROUP"
+            ? conv.name ?? "Group"
+            : conv.members.find((m) => m.id !== userId)?.name ?? "Direct"
+          : "Chat";
+        return { convId: msg.conversationId, convName, msg };
+      }),
+    [starredMessages, conversations, userId]
+  );
 
   /* ── actions ─────────────────────────────────────────────────────── */
   const handleSelectStatus = async (preset: { emoji: string; text: string } | null) => {
@@ -209,7 +413,9 @@ export default function Sidebar() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // End the session server-side too, so this token stops working immediately.
+    await apiPost("/api/account/logout").catch(() => {});
     disconnectStomp().catch(() => {});
     clearAuth();
     window.location.href = "/login";
@@ -251,6 +457,23 @@ export default function Sidebar() {
           >
             <Search size={15} />
           </button>
+          <button
+            className="sb-icon-btn"
+            onClick={() => setIsChannelsOpen(true)}
+            title="Browse public channels"
+            aria-label="Browse public channels"
+          >
+            <Hash size={15} />
+          </button>
+          <button
+            className="sb-icon-btn sb-activity-btn"
+            onClick={() => setActivityTab("mentions")}
+            title="Activity: mentions, tasks, reminders, scheduled"
+            aria-label={`Activity${activityCount > 0 ? ` (${activityCount} new)` : ""}`}
+          >
+            <Bell size={15} />
+            {activityCount > 0 && <span className="sb-activity-badge">{activityCount > 99 ? "99+" : activityCount}</span>}
+          </button>
           {userRole === "ADMIN" && (
             <>
               <button className="sb-icon-btn" onClick={() => setIsAdminOpen(true)} title="Admin Panel">
@@ -287,26 +510,45 @@ export default function Sidebar() {
           <Users size={13} /> Directory
         </button>
         <button className={`sb-tab ${tab === "starred" ? "sb-tab--on" : ""}`} onClick={() => setTab("starred")}>
-          <Star size={13} /> Starred ({starredMessageIds.size})
+          <Star size={13} /> Starred ({starredMessages.length})
+        </button>
+        <button className={`sb-tab ${tab === "calls" ? "sb-tab--on" : ""}`} onClick={openCallsTab}>
+          <Phone size={13} /> Calls
         </button>
       </div>
 
       {/* list */}
       <div className="sb-list">
         {tab === "chats" ? (
-          sortedConvs.length === 0 ? (
-            <p className="sb-empty">No conversations yet</p>
+          <>
+          {showArchived ? (
+            <button type="button" className="sb-archived-row" onClick={() => setShowArchived(false)}>
+              <ChevronLeft size={16} /> <span>Archived chats</span>
+            </button>
+          ) : archivedCount > 0 && (
+            <button type="button" className="sb-archived-row" onClick={() => setShowArchived(true)}>
+              <Archive size={16} /> <span>Archived</span>
+              <span className="sb-archived-count">{archivedUnread > 0 ? `${archivedUnread} unread` : archivedCount}</span>
+            </button>
+          )}
+          {sortedConvs.length === 0 ? (
+            <p className="sb-empty">{showArchived ? "No archived chats" : "No conversations yet"}</p>
           ) : (
             sortedConvs.map((conv) => {
               const name = getDisplayName(conv, userId);
               const other = getOtherMember(conv, userId);
               const isOnline = other ? onlineUserIds.has(other.id) : false;
               const isActive = conv.id === activeConversationId;
-              const isMuted = conv.mutedUntil && new Date(conv.mutedUntil).getTime() > Date.now();
+              const isMuted = isMutedConv(conv);
+              const draft = !isActive ? drafts[conv.id] : undefined;
 
               return (
-                <button
+                <div
                   key={conv.id}
+                  className="sb-item-row"
+                  onContextMenu={(e) => { e.preventDefault(); setMenuConvId(conv.id); }}
+                >
+                <button
                   className={`sb-item ${isActive ? "sb-item--active" : ""}`}
                   onClick={() => setActiveConversation(conv.id)}
                 >
@@ -333,9 +575,14 @@ export default function Sidebar() {
                     </div>
                     <div className="sb-item-bottom">
                       <span className="sb-item-preview">
-                        {conv.lastMessagePreview || "No messages yet"}
+                        {draft ? (
+                          <><span className="sb-draft-label">Draft:</span> {draft}</>
+                        ) : (
+                          conv.lastMessagePreview || "No messages yet"
+                        )}
                       </span>
                       <div className="sb-item-indicators">
+                        {conv.pinned && !showArchived && <Pin size={12} className="sb-muted-icon" />}
                         {isMuted && <BellOff size={13} className="sb-muted-icon" />}
                         {conv.unreadCount > 0 && (
                           <span className={`sb-badge ${isMuted ? "sb-badge--muted" : ""}`}>
@@ -346,6 +593,89 @@ export default function Sidebar() {
                     </div>
                   </div>
                 </button>
+                <button
+                  type="button"
+                  className={`sb-item-menu-btn ${menuConvId === conv.id ? "sb-item-menu-btn--open" : ""}`}
+                  aria-label={`Options for ${name}`}
+                  onClick={() => setMenuConvId(menuConvId === conv.id ? null : conv.id)}
+                >
+                  <MoreVertical size={15} />
+                </button>
+                {menuConvId === conv.id && (
+                  <>
+                    <div className="sb-menu-backdrop" onClick={() => setMenuConvId(null)} />
+                    <div className="sb-item-menu" role="menu">
+                      {!conv.archived && (
+                        <button type="button" role="menuitem" onClick={() => handlePinToggle(conv)}>
+                          <Pin size={14} /> {conv.pinned ? "Unpin chat" : "Pin chat"}
+                        </button>
+                      )}
+                      <button type="button" role="menuitem" onClick={() => handleArchiveToggle(conv)}>
+                        {conv.archived ? <><ArchiveRestore size={14} /> Unarchive chat</> : <><Archive size={14} /> Archive chat</>}
+                      </button>
+                      {conv.unreadCount > 0 && (
+                        <button type="button" role="menuitem" onClick={() => handleMarkRead(conv)}>
+                          <CheckCheck size={14} /> Mark as read
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+                </div>
+              );
+            })
+          )}
+          </>
+        ) : tab === "calls" ? (
+          calls === null ? (
+            <p className="sb-empty">Loading calls…</p>
+          ) : calls.length === 0 ? (
+            <div className="sb-empty">
+              <Phone size={32} style={{ opacity: 0.4, margin: "0 auto 0.5rem" }} />
+              <p>No calls yet</p>
+            </div>
+          ) : (
+            calls.map((call) => {
+              const conv = conversations.find((c) => c.id === call.conversationId);
+              const name = conv ? getDisplayName(conv, userId) : call.initiatorName;
+              const other = conv ? getOtherMember(conv, userId) : undefined;
+              const outgoing = call.initiatorId === userId;
+              const missed = call.status === "MISSED" || call.status === "REJECTED";
+              const DirIcon = missed && !outgoing ? PhoneMissed : outgoing ? PhoneOutgoing : PhoneIncoming;
+              const duration = callDuration(call);
+              return (
+                <div key={call.id} className="sb-item sb-call-item">
+                  {conv?.type === "GROUP" ? (
+                    <div className="sb-group-icon"><Users size={20} /></div>
+                  ) : (
+                    <Avatar name={name} size={42} online={other ? onlineUserIds.has(other.id) : false} />
+                  )}
+                  <div className="sb-item-body">
+                    <div className="sb-item-top">
+                      <span className={`sb-item-name ${missed && !outgoing ? "sb-call-missed" : ""}`}>{name}</span>
+                      <span className="sb-item-time">{relativeTime(call.startedAt)}</span>
+                    </div>
+                    <div className="sb-item-bottom">
+                      <span className={`sb-item-preview sb-call-meta ${missed && !outgoing ? "sb-call-missed" : ""}`}>
+                        <DirIcon size={13} />
+                        {missed ? (outgoing ? "No answer" : "Missed") : outgoing ? "Outgoing" : "Incoming"}
+                        {call.type === "VIDEO" ? " video" : " voice"} call{duration && ` · ${duration}`}
+                      </span>
+                      {other && !conv?.blockedByMe && !conv?.blockedMe && (
+                        <div className="sb-item-indicators">
+                          <button
+                            type="button"
+                            className="sb-call-btn"
+                            title={`Call ${name} back`}
+                            onClick={() => initiateCall(call.conversationId, other.id, other.name, call.type)}
+                          >
+                            {call.type === "VIDEO" ? <Video size={15} /> : <Phone size={15} />}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
               );
             })
           )
@@ -382,7 +712,7 @@ export default function Sidebar() {
                 key={msg.id}
                 className="sb-item sb-item--starred"
                 onClick={() => {
-                  setActiveConversation(convId);
+                  useStore.getState().openChatAt(convId, msg.id);
                   setTab("chats");
                 }}
               >
@@ -420,11 +750,24 @@ export default function Sidebar() {
             {userStatus ? `${userStatus.emoji} ${userStatus.text}` : `${userRole} • Available`}
           </span>
         </div>
+        <button className="sb-theme-toggle" onClick={() => setIsSettingsOpen(true)} title="Settings (Ctrl + /)" aria-label="Settings">
+          <Settings size={16} />
+        </button>
         <button className="sb-theme-toggle" onClick={toggleTheme} title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
           {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
         </button>
         <button className="sb-logout" onClick={handleLogout} title="Log out"><LogOut size={16} /></button>
       </div>
+
+      {isChannelsOpen && <ChannelBrowser onClose={() => setIsChannelsOpen(false)} />}
+
+      {activityTab && (
+        <ActivityPanel initialTab={activityTab} onClose={() => setActivityTab(null)} onChanged={refreshActivity} />
+      )}
+
+      {isSettingsOpen && (
+        <SettingsModal onClose={() => setIsSettingsOpen(false)} theme={theme} setTheme={setTheme} />
+      )}
 
       {/* Work Status Modal */}
       {showStatusModal && (
@@ -499,6 +842,48 @@ export default function Sidebar() {
         .sb-item { display:flex;align-items:center;gap:0.75rem;padding:0.6rem 0.625rem;border-radius:12px;text-align:left;transition:background 0.12s;width:100%;cursor:pointer; }
         .sb-item:hover { background:var(--bg-hover); }
         .sb-item--active { background:var(--bg-active) !important; }
+        .sb-tab { min-width:0;white-space:nowrap;font-size:0.6875rem; }
+        .sb-activity-btn { position:relative; }
+        .sb-activity-badge {
+          position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;border-radius:999px;
+          background:var(--danger);color:#fff;font-size:0.625rem;font-weight:700;display:flex;align-items:center;justify-content:center;
+          border:2px solid var(--bg-primary);
+        }
+        .sb-item-row { position:relative; }
+        .sb-item-row .sb-item { padding-right:1.9rem; }
+        .sb-item-menu-btn {
+          position:absolute;right:0.3rem;top:50%;transform:translateY(-50%);width:26px;height:26px;border-radius:8px;
+          display:flex;align-items:center;justify-content:center;color:var(--text-muted);background:var(--bg-primary);
+          border:1px solid var(--border);opacity:0;cursor:pointer;transition:opacity 0.12s;
+        }
+        .sb-item-row:hover .sb-item-menu-btn, .sb-item-menu-btn:focus-visible, .sb-item-menu-btn--open { opacity:1; }
+        .sb-menu-backdrop { position:fixed;inset:0;z-index:49; }
+        .sb-item-menu {
+          position:absolute;right:0.3rem;top:calc(50% + 16px);z-index:50;min-width:170px;padding:4px;
+          background:var(--bg-primary);border:1px solid var(--border);border-radius:10px;
+          box-shadow:var(--shadow-lg, 0 12px 32px rgba(0,0,0,0.18));display:flex;flex-direction:column;
+        }
+        .sb-item-menu button {
+          display:flex;align-items:center;gap:0.5rem;padding:0.45rem 0.6rem;border-radius:7px;font-size:0.8125rem;
+          color:var(--text-primary);text-align:left;cursor:pointer;
+        }
+        .sb-item-menu button:hover { background:var(--bg-hover); }
+        .sb-archived-row {
+          display:flex;align-items:center;gap:0.6rem;width:100%;padding:0.55rem 0.75rem;border-radius:10px;
+          font-size:0.8125rem;font-weight:600;color:var(--text-secondary);cursor:pointer;
+        }
+        .sb-archived-row:hover { background:var(--bg-hover); }
+        .sb-archived-row span:nth-child(2) { flex:1;text-align:left; }
+        .sb-archived-count { font-size:0.72rem;color:var(--accent);font-weight:700; }
+        .sb-draft-label { color:var(--danger);font-weight:600; }
+        .sb-call-item { cursor:default; }
+        .sb-call-meta { display:inline-flex;align-items:center;gap:0.3rem; }
+        .sb-call-missed { color:var(--danger) !important; }
+        .sb-call-btn {
+          width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+          color:var(--accent);background:var(--accent-soft);cursor:pointer;
+        }
+        .sb-call-btn:hover { background:var(--accent-muted); }
         .sb-item-avatar { flex-shrink:0; }
         .sb-group-icon { width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,var(--accent-muted),var(--accent-deep));color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700; }
         .sb-item-body { flex:1;min-width:0;display:flex;flex-direction:column;gap:0.15rem; }

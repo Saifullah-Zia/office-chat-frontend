@@ -4,8 +4,8 @@ import React, { useState, useEffect, useMemo } from "react";
 import { Search, X, MessageSquare, Users, User as UserIcon, CornerDownRight, Calendar } from "lucide-react";
 import { useStore } from "@/lib/store";
 import Avatar from "./Avatar";
-import { apiPost } from "@/lib/api";
-import { ConversationResponse } from "@/types";
+import { apiGet, apiPost } from "@/lib/api";
+import { ConversationResponse, MessageResponse } from "@/types";
 
 export default function GlobalSearchModal() {
   const isOpen = useStore((s) => s.isGlobalSearchOpen);
@@ -15,9 +15,15 @@ export default function GlobalSearchModal() {
   const setConversations = useStore((s) => s.setConversations);
   const setActiveConversation = useStore((s) => s.setActiveConversation);
   const users = useStore((s) => s.users);
-  const messagesByConv = useStore((s) => s.messagesByConv);
 
   const [query, setQuery] = useState("");
+  const [filterConv, setFilterConv] = useState<number | "">("");
+  const [filterSender, setFilterSender] = useState<number | "">("");
+  const [filterHas, setFilterHas] = useState<"" | "link" | "image" | "file" | "voice">("");
+  const [filterDate, setFilterDate] = useState<"any" | "today" | "week" | "month">("any");
+  const [serverResults, setServerResults] = useState<MessageResponse[]>([]);
+  const [searching, setSearching] = useState(false);
+  const openChatAt = useStore((s) => s.openChatAt);
 
   // Keyboard shortcut Ctrl+K or Cmd+K
   useEffect(() => {
@@ -64,43 +70,61 @@ export default function GlobalSearchModal() {
     }).slice(0, 5);
   }, [users, trimmedQuery, userId]);
 
-  // 3. Filtered Messages across all loaded conversations
-  const matchingMessages = useMemo(() => {
-    if (!trimmedQuery || trimmedQuery.length < 2) return [];
-    const results: {
-      convId: number;
-      convName: string;
-      messageId: number;
-      senderName: string;
-      content: string;
-      createdAt: string;
-    }[] = [];
+  // 3. Messages — searched on the server across ALL history in my chats, with filters
+  const hasFilters = !!(filterConv || filterSender || filterHas || filterDate !== "any");
+  useEffect(() => {
+    if (!isOpen) return;
+    const text = query.trim();
+    if (text.length < 2 && !hasFilters) {
+      // Nothing to search for; clear results asynchronously to avoid a render cascade.
+      const t = setTimeout(() => { setServerResults([]); setSearching(false); }, 0);
+      return () => clearTimeout(t);
+    }
+    const from =
+      filterDate === "today" ? new Date(new Date().setHours(0, 0, 0, 0))
+      : filterDate === "week" ? new Date(Date.now() - 7 * 86400_000)
+      : filterDate === "month" ? new Date(Date.now() - 30 * 86400_000)
+      : null;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      setSearching(true);
+      apiGet<MessageResponse[]>("/api/messages/search", {
+        q: text || undefined,
+        conversationId: filterConv || undefined,
+        senderId: filterSender || undefined,
+        has: filterHas || undefined,
+        from: from ? from.toISOString() : undefined,
+        limit: 30,
+      })
+        .then((r) => { if (!cancelled) setServerResults(r); })
+        .catch(() => { if (!cancelled) setServerResults([]); })
+        .finally(() => { if (!cancelled) setSearching(false); });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [isOpen, query, filterConv, filterSender, filterHas, filterDate, hasFilters]);
 
-    Object.entries(messagesByConv).forEach(([convIdStr, msgs]) => {
-      const convId = Number(convIdStr);
-      const conv = conversations.find((c) => c.id === convId);
-      const convName = conv
-        ? conv.type === "GROUP"
-          ? conv.name ?? "Group"
-          : conv.members.find((m) => m.id !== userId)?.name ?? "Direct"
-        : "Chat";
-
-      msgs.forEach((m) => {
-        if (m.content && m.content.toLowerCase().includes(trimmedQuery)) {
-          results.push({
-            convId,
-            convName,
-            messageId: m.id,
-            senderName: m.senderName,
-            content: m.content,
-            createdAt: m.createdAt,
-          });
-        }
-      });
-    });
-
-    return results.slice(0, 8);
-  }, [messagesByConv, conversations, trimmedQuery, userId]);
+  const matchingMessages = useMemo(
+    () =>
+      serverResults.map((m) => {
+        const conv = conversations.find((c) => c.id === m.conversationId);
+        const convName = conv
+          ? conv.type === "GROUP"
+            ? conv.name ?? "Group"
+            : conv.members.find((mm) => mm.id !== userId)?.name ?? "Direct"
+          : "Chat";
+        return {
+          convId: m.conversationId,
+          convName,
+          // Thread replies aren't in the main timeline: jump to their thread's first message.
+          messageId: m.threadRootId ?? m.id,
+          resultId: m.id,
+          senderName: m.senderName,
+          content: m.content || (m.attachments?.[0] ? `📎 ${m.attachments[0].filename ?? m.attachments[0].fileName ?? "Attachment"}` : ""),
+          createdAt: m.createdAt,
+        };
+      }),
+    [serverResults, conversations, userId]
+  );
 
   if (!isOpen) return null;
 
@@ -153,16 +177,51 @@ export default function GlobalSearchModal() {
           <span className="gsm-badge">ESC</span>
         </div>
 
+        {/* Message filters */}
+        <div className="gsm-filters">
+          <select value={filterConv} onChange={(e) => setFilterConv(e.target.value ? Number(e.target.value) : "")} aria-label="In chat">
+            <option value="">All chats</option>
+            {conversations.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.type === "GROUP" ? c.name ?? "Group" : c.members.find((m) => m.id !== userId)?.name ?? "Direct"}
+              </option>
+            ))}
+          </select>
+          <select value={filterSender} onChange={(e) => setFilterSender(e.target.value ? Number(e.target.value) : "")} aria-label="From">
+            <option value="">Anyone</option>
+            {userId && <option value={userId}>Me</option>}
+            {users.filter((u) => u.id !== userId).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+          <select value={filterHas} onChange={(e) => setFilterHas(e.target.value as typeof filterHas)} aria-label="Contains">
+            <option value="">Any type</option>
+            <option value="link">Has link</option>
+            <option value="image">Has photo</option>
+            <option value="file">Has file</option>
+            <option value="voice">Voice note</option>
+          </select>
+          <select value={filterDate} onChange={(e) => setFilterDate(e.target.value as typeof filterDate)} aria-label="Date">
+            <option value="any">Any time</option>
+            <option value="today">Today</option>
+            <option value="week">Last 7 days</option>
+            <option value="month">Last 30 days</option>
+          </select>
+          {hasFilters && (
+            <button type="button" className="gsm-filter-clear" onClick={() => { setFilterConv(""); setFilterSender(""); setFilterHas(""); setFilterDate("any"); }}>
+              Clear
+            </button>
+          )}
+        </div>
+
         {/* Results list */}
         <div className="gsm-results">
-          {!trimmedQuery ? (
+          {!trimmedQuery && !hasFilters ? (
             <div className="gsm-hint">
               <p className="gsm-hint-title">Office Global Search</p>
               <p className="gsm-hint-sub">Type a coworker&apos;s name, department, channel, or message keyword.</p>
             </div>
           ) : totalResults === 0 ? (
             <div className="gsm-empty">
-              <p>No results found for &ldquo;{query}&rdquo;</p>
+              <p>{searching ? "Searching…" : trimmedQuery ? <>No results found for &ldquo;{query}&rdquo;</> : "No messages match these filters"}</p>
             </div>
           ) : (
             <>
@@ -238,14 +297,17 @@ export default function GlobalSearchModal() {
                   </div>
                   {matchingMessages.map((m) => (
                     <button
-                      key={m.messageId}
+                      key={m.resultId}
                       type="button"
                       className="gsm-item gsm-item--message"
-                      onClick={() => handleSelectConv(m.convId)}
+                      onClick={() => { openChatAt(m.convId, m.messageId); setOpen(false); }}
                     >
                       <div className="gsm-msg-header">
                         <span className="gsm-msg-conv">{m.convName}</span>
                         <span className="gsm-msg-sender">• {m.senderName}</span>
+                        <span className="gsm-msg-sender">
+                          • {new Date(m.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        </span>
                       </div>
                       <p className="gsm-msg-snippet">{m.content}</p>
                     </button>
@@ -318,6 +380,16 @@ export default function GlobalSearchModal() {
           font-weight: 700;
           padding: 2px 6px;
           border-radius: 4px;
+        }
+        .gsm-filters {
+          display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0.55rem 1rem; border-bottom: 1px solid var(--border);
+        }
+        .gsm-filters select {
+          flex: 1 1 120px; min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 0.3rem 0.45rem;
+          background: var(--bg-secondary); color: var(--text-primary); font-size: 0.76rem;
+        }
+        .gsm-filter-clear {
+          border: none; background: none; color: var(--accent); font-size: 0.76rem; font-weight: 600; cursor: pointer;
         }
         .gsm-results {
           max-height: 440px;

@@ -7,8 +7,15 @@ import PollCard from "./PollCard";
 import Avatar from "./Avatar";
 import {
   FileText, Download, Check, CheckCheck, Copy, Reply, Edit2, Trash2,
-  Check as CheckIcon, X as XIcon, X, Pin, Star
+  Check as CheckIcon, X as XIcon, X, Pin, Star, Forward, Info, Flag, AlarmClock, ListTodo, MessagesSquare
 } from "lucide-react";
+import { RemindMeModal, CreateTaskModal } from "./PlannerModals";
+import ForwardModal from "./ForwardModal";
+import MessageInfoModal from "./MessageInfoModal";
+import ReportModal from "./ReportModal";
+import ImageViewer, { ViewerImage } from "./ImageViewer";
+import LinkPreviewCard, { firstUrl } from "./LinkPreviewCard";
+import { downloadHref, isViewableImage } from "@/lib/media";
 import { apiPost, apiPut, apiDelete } from "@/lib/api";
 import { useStore } from "@/lib/store";
 import RichTextRenderer from "./RichTextRenderer";
@@ -18,6 +25,8 @@ interface MessageBubbleProps {
   message: MessageResponse;
   isMine: boolean;
   onReply?: (msg: MessageResponse) => void;
+  /** Main timeline only: open this message's thread. */
+  onOpenThread?: (msg: MessageResponse) => void;
 }
 
 function formatTime(isoString: string): string {
@@ -51,13 +60,51 @@ function parseReplyAndContent(rawContent: string): { reply: { sender: string; te
   return { reply: null, text: rawContent };
 }
 
-export default function MessageBubble({ message, isMine, onReply }: MessageBubbleProps) {
+export default function MessageBubble({ message, isMine, onReply, onOpenThread }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
   const [showReactionsModal, setShowReactionsModal] = useState(false);
   const [activeEmojiTab, setActiveEmojiTab] = useState<string>("ALL");
+  const [isForwardOpen, setIsForwardOpen] = useState(false);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [isReportOpen, setIsReportOpen] = useState(false);
+  const [isRemindOpen, setIsRemindOpen] = useState(false);
+  const [isTaskOpen, setIsTaskOpen] = useState(false);
+  const [viewer, setViewer] = useState<{ images: ViewerImage[]; index: number } | null>(null);
+  const linkUrl = !message.deleted && message.type === "TEXT" ? firstUrl(message.content) : null;
+
+  // Open the lightbox with every image in this chat, starting at the clicked one.
+  const openImageViewer = (attachmentId: number) => {
+    const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+    const convMessages = useStore.getState().messagesByConv[message.conversationId] ?? [message];
+    const images: ViewerImage[] = [];
+    convMessages.forEach((m) => {
+      if (m.deleted) return;
+      m.attachments?.forEach((a) => {
+        if (!isViewableImage(a)) return;
+        images.push({
+          id: a.id,
+          url: a.downloadUrl.startsWith("http") ? a.downloadUrl : `${API}${a.downloadUrl}`,
+          name: a.filename ?? a.fileName ?? a.originalName ?? "Image",
+          sender: m.senderName,
+          createdAt: m.createdAt,
+        });
+      });
+    });
+    const index = images.findIndex((img) => img.id === attachmentId);
+    setViewer({ images, index: Math.max(index, 0) });
+  };
+
+  // Keyboard "↑ to edit": enter edit mode once per request aimed at this message.
+  const editRequest = useStore((s) => s.editRequest);
+  const [handledEditNonce, setHandledEditNonce] = useState<number | null>(null);
+  if (editRequest && editRequest.id === message.id && editRequest.nonce !== handledEditNonce) {
+    setHandledEditNonce(editRequest.nonce);
+    setEditText(message.content);
+    setIsEditing(true);
+  }
   const [previewDoc, setPreviewDoc] = useState<{ url: string; name: string; isImage?: boolean; isPdf?: boolean } | null>(null);
 
   const userRole = useStore((s) => s.userRole);
@@ -170,6 +217,13 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
           <span className="mb-sender-name">{message.senderName}</span>
         )}
 
+        {/* Forwarded label */}
+        {message.forwarded && !isDeleted && (
+          <span className="mb-forwarded">
+            <Forward size={11} /> Forwarded
+          </span>
+        )}
+
         {/* Pinned Badge */}
         {message.pinned && (
           <div className="mb-pinned-badge">
@@ -204,11 +258,67 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
             <button
               type="button"
               className={`mb-action-btn ${isStarred ? "mb-action-btn--starred" : ""}`}
-              onClick={() => toggleStarMessage(message.id)}
+              onClick={() => toggleStarMessage(message)}
               title={isStarred ? "Unstar message" : "Star message"}
             >
               <Star size={13} fill={isStarred ? "currentColor" : "none"} />
             </button>
+            {message.type !== "POLL" && (
+              <button
+                type="button"
+                className="mb-action-btn"
+                onClick={() => setIsForwardOpen(true)}
+                title="Forward"
+              >
+                <Forward size={13} />
+              </button>
+            )}
+            {isMine && (
+              <button
+                type="button"
+                className="mb-action-btn"
+                onClick={() => setIsInfoOpen(true)}
+                title="Message info (read by)"
+              >
+                <Info size={13} />
+              </button>
+            )}
+            <button
+              type="button"
+              className="mb-action-btn"
+              onClick={() => setIsRemindOpen(true)}
+              title="Remind me about this"
+            >
+              <AlarmClock size={13} />
+            </button>
+            <button
+              type="button"
+              className="mb-action-btn"
+              onClick={() => setIsTaskOpen(true)}
+              title="Create task from message"
+            >
+              <ListTodo size={13} />
+            </button>
+            {!isMine && (
+              <button
+                type="button"
+                className="mb-action-btn"
+                onClick={() => setIsReportOpen(true)}
+                title="Report message"
+              >
+                <Flag size={13} />
+              </button>
+            )}
+            {onOpenThread && (
+              <button
+                type="button"
+                className="mb-action-btn"
+                onClick={() => onOpenThread(message)}
+                title="Reply in thread"
+              >
+                <MessagesSquare size={13} />
+              </button>
+            )}
             {onReply && (
               <button
                 type="button"
@@ -318,6 +428,7 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
                 </div>
               );
             })()}
+            {linkUrl && <LinkPreviewCard url={linkUrl} isMine={isMine} />}
           </>
         )}
 
@@ -325,7 +436,7 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
         {!isDeleted && !isVoiceMessage && message.attachments && message.attachments.length > 0 && (
           <div className="mb-attachments">
             {message.attachments.map((att: AttachmentResponse) => {
-              const isImage = (att.contentType ?? att.mimeType ?? "").startsWith("image/");
+              const isImage = isViewableImage(att);
               const isPdf = (att.filename ?? att.fileName ?? "").toLowerCase().endsWith(".pdf") || (att.contentType ?? "").includes("pdf");
               const downloadUrl = att.downloadUrl.startsWith("http")
                 ? att.downloadUrl
@@ -338,7 +449,7 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
                   key={att.id}
                   className="img-preview-box"
                   style={{ cursor: "pointer" }}
-                  onClick={() => setPreviewDoc({ url: downloadUrl, name, isImage: true })}
+                  onClick={() => openImageViewer(att.id)}
                   title="Click to view full preview"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -360,7 +471,7 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
                     <span className="file-size">{formatFileSize(bytes)}</span>
                   </div>
                   <a
-                    href={downloadUrl}
+                    href={downloadHref(downloadUrl)}
                     download={name}
                     className="file-dl-link"
                     onClick={(e) => e.stopPropagation()}
@@ -468,6 +579,19 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
           </div>
         )}
 
+        {/* Thread summary */}
+        {onOpenThread && (message.threadReplyCount ?? 0) > 0 && (
+          <button
+            type="button"
+            className={`mb-thread-link ${isMine ? "mb-thread-link--mine" : ""}`}
+            onClick={() => onOpenThread(message)}
+          >
+            <MessagesSquare size={13} />
+            {message.threadReplyCount} repl{message.threadReplyCount === 1 ? "y" : "ies"}
+            {message.threadLastReplyAt && <span className="mb-thread-when">· last {formatTime(message.threadLastReplyAt)}</span>}
+          </button>
+        )}
+
         {/* Footer info: time, edited tag, status ticks */}
         <div className={`mb-footer ${isMine ? "mb-footer--mine" : "mb-footer--theirs"}`}>
           {isEdited && !isDeleted && <span className="mb-edited-tag">(edited)</span>}
@@ -484,6 +608,20 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
           )}
         </div>
       </div>
+
+      {isForwardOpen && <ForwardModal message={message} onClose={() => setIsForwardOpen(false)} />}
+      {isInfoOpen && <MessageInfoModal message={message} onClose={() => setIsInfoOpen(false)} />}
+      {isReportOpen && (
+        <ReportModal
+          messageId={message.id}
+          messagePreview={message.content || "Attachment"}
+          targetName={message.senderName}
+          onClose={() => setIsReportOpen(false)}
+        />
+      )}
+      {viewer && <ImageViewer images={viewer.images} startIndex={viewer.index} onClose={() => setViewer(null)} />}
+      {isRemindOpen && <RemindMeModal message={message} onClose={() => setIsRemindOpen(false)} />}
+      {isTaskOpen && <CreateTaskModal message={message} onClose={() => setIsTaskOpen(false)} />}
 
       {previewDoc && (
         <DocViewerModal
@@ -674,6 +812,18 @@ export default function MessageBubble({ message, isMine, onReply }: MessageBubbl
 
         .mb-sender-name {
           font-size: 0.75rem; font-weight: 600; color: var(--text-tertiary); margin-left: 0.5rem;
+        }
+        .mb-thread-link {
+          display: inline-flex; align-items: center; gap: 0.3rem; margin: 0.2rem 0.4rem 0; padding: 0.15rem 0.45rem;
+          border: none; background: none; border-radius: 6px; cursor: pointer; font-size: 0.75rem; font-weight: 700;
+          color: var(--accent); align-self: flex-start;
+        }
+        .mb-thread-link:hover { background: var(--accent-soft); }
+        .mb-thread-link--mine { align-self: flex-end; }
+        .mb-thread-when { font-weight: 500; color: var(--text-muted); }
+        .mb-forwarded {
+          display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.6875rem; font-style: italic;
+          color: var(--text-muted); margin: 0 0.5rem 0.15rem;
         }
         .mb-bubble {
           display: inline-block; width: auto; max-width: 100%;

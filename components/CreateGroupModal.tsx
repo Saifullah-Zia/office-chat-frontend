@@ -20,6 +20,8 @@ export default function CreateGroupModal({
   onGroupCreated,
 }: CreateGroupModalProps) {
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [isPublic, setIsPublic] = useState(false);
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -51,12 +53,16 @@ export default function CreateGroupModal({
       const payload: CreateGroupRequest = {
         name: name.trim(),
         memberIds: selectedIds,
+        description: description.trim() || undefined,
+        isPublic,
       };
 
       const newConv = await apiPost<ConversationResponse>("/api/conversations/group", payload);
       onGroupCreated(newConv);
       onClose();
       setName("");
+      setDescription("");
+      setIsPublic(false);
       setSelectedIds([]);
     } catch (err: unknown) {
       const e_ = err as { response?: { data?: { error?: string; message?: string } } };
@@ -106,6 +112,23 @@ export default function CreateGroupModal({
               required
             />
           </div>
+
+          <div className="modal-field">
+            <label className="modal-label">Description (optional)</label>
+            <input
+              type="text"
+              placeholder="What's this group about?"
+              maxLength={1000}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="modal-input"
+            />
+          </div>
+
+          <label className="modal-field" style={{ flexDirection: "row", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+            <input type="checkbox" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)} />
+            <span className="modal-label" style={{ margin: 0 }}>Public channel — anyone in the company can find and join it</span>
+          </label>
 
           <div className="modal-field">
             <label className="modal-label">Add Members ({selectedIds.length} selected)</label>
