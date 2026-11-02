@@ -1065,7 +1065,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                 <div className="cw-date-divider">
                   <span>{group.date}</span>
                 </div>
-                {group.msgs.map((msg) => (
+                {group.msgs.map((msg, mi) => (
                   <div key={msg.id} id={`msg-${msg.id}`} className="cw-msg-anchor">
                     {unreadAnchor?.id === msg.id && (
                       <div className="cw-unread-divider">
@@ -1077,6 +1077,10 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                     <MessageBubble
                       message={msg}
                       isMine={msg.senderId === userId}
+                      // 1:1: no name/avatar. Groups: only when the sender changes (like WhatsApp).
+                      sender={!isGroupChat ? "none"
+                        : mi > 0 && group.msgs[mi - 1].senderId === msg.senderId && group.msgs[mi - 1].type !== "CALL"
+                          ? "continuation" : "show"}
                       onReply={(m) => setReplyMessage(m)}
                       onOpenThread={(m) => { setIsDrawerOpen(false); setThreadRootId(m.id); }}
                       ack={acks && !msg.deleted ? {

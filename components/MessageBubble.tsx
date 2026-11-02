@@ -32,6 +32,11 @@ interface MessageBubbleProps {
   onOpenThread?: (msg: MessageResponse) => void;
   /** Announcement groups: acknowledgement state for this post. */
   ack?: { count: number; audience: number; mine: boolean; canViewList: boolean; onAck: () => void };
+  /**
+   * Others' messages: "show" avatar + name (default), "continuation" = same sender as the message
+   * above (keep the space so bubbles line up), "none" = 1:1 chat, where it's obvious who wrote it.
+   */
+  sender?: "show" | "continuation" | "none";
 }
 
 function formatTime(isoString: string): string {
@@ -76,7 +81,7 @@ function MenuItem({ icon, label, onClick, danger }: { icon: ReactNode; label: st
   );
 }
 
-export default function MessageBubble({ message, isMine, onReply, onOpenThread, ack }: MessageBubbleProps) {
+export default function MessageBubble({ message, isMine, onReply, onOpenThread, ack, sender = "show" }: MessageBubbleProps) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [ackListOpen, setAckListOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -293,11 +298,12 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread, 
   return (
     <div className={`mb-container ${isMine ? "mb-container--mine" : "mb-container--theirs"}`}>
       {/* Sender Avatar */}
-      {!isMine && (
+      {!isMine && sender === "show" && (
         <div className="mb-avatar-wrapper">
           <Avatar userId={message.senderId} name={message.senderName} size={30} />
         </div>
       )}
+      {!isMine && sender === "continuation" && <div className="mb-avatar-wrapper mb-avatar-wrapper--spacer" aria-hidden="true" />}
 
       {/* Bubble Wrapper */}
       <div
@@ -310,7 +316,7 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread, 
         }}
       >
         {/* Sender Name */}
-        {!isMine && (
+        {!isMine && sender === "show" && (
           <span className="mb-sender-name">{message.senderName}</span>
         )}
 
@@ -692,6 +698,7 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread, 
         .mb-container--theirs { align-self: flex-start; align-items: flex-start; }
 
         .mb-avatar-wrapper { flex-shrink: 0; align-self: flex-end; }
+        .mb-avatar-wrapper--spacer { width: 30px; }
         .mb-wrapper { display: inline-flex; flex-direction: column; max-width: 100%; position: relative; }
 
         /* Reaction pill: floats above the bubble, aligned to the bubble side so it never leaves the chat */
