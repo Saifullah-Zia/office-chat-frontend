@@ -90,6 +90,12 @@ export interface ConversationResponse {
   retentionDays?: number | null;
   /** Join-link code; only sent to group admins */
   inviteCode?: string | null;
+  /** Work-tracking labels shared by the chat ("Denial", "Pending payer"...); empty for providers */
+  labels?: string[];
+  /** Mini-ticket status: null = not tracked */
+  ticketStatus?: "OPEN" | "DONE" | null;
+  ticketUpdatedByName?: string | null;
+  ticketUpdatedAt?: string | null;
 }
 
 /** CALL = call log entry posted by the server ("Missed voice call", "Video call · 4m 12s") */

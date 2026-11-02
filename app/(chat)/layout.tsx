@@ -11,6 +11,7 @@ import CallWindow from "@/components/CallWindow";
 import { CallContext } from "@/context/CallContext";
 import GlobalSearchModal from "@/components/GlobalSearchModal";
 import Toaster from "@/components/Toaster";
+import IdleLock from "@/components/IdleLock";
 import { syncPushSubscription } from "@/lib/push";
 
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
@@ -132,6 +133,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
 
         <GlobalSearchModal />
         <Toaster />
+        <IdleLock inCall={!!activeCall} ringing={!!incomingSignal && !activeCall} />
 
         {activeCall && (
           <CallWindow

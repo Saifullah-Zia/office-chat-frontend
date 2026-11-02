@@ -5,6 +5,8 @@
  * No Zustand persist, no hydration races, no middleware.
  */
 
+import { clearScreenLock } from "@/lib/idleLock";
+
 const TOKEN_KEY = "office_chat_token";
 const USER_KEY = "office_chat_user";
 
@@ -41,6 +43,23 @@ export function getUser(): StoredUser | null {
   }
 }
 
+const DEVICE_KEY = "office_chat_device";
+
+/** Random id for this browser, kept across sign-outs (used for new-device sign-in alerts). */
+export function getDeviceId(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    let id = localStorage.getItem(DEVICE_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(DEVICE_KEY, id);
+    }
+    return id;
+  } catch {
+    return null;
+  }
+}
+
 /** Keep the stored name in step after the user renames themselves. */
 export function updateStoredName(name: string): void {
   const user = getUser();
@@ -56,4 +75,5 @@ export function isAuthenticated(): boolean {
 export function clearAuth(): void {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+  clearScreenLock(); // the next sign-in starts unlocked
 }

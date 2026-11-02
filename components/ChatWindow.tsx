@@ -12,6 +12,7 @@ import { QuickReply, loadQuickReplies } from "@/lib/templates";
 import { aiEnabled } from "@/lib/ai";
 import { ScheduleMessageModal, formatWhen } from "./PlannerModals";
 import ThreadPanel from "./ThreadPanel";
+import TicketControl from "./TicketControl";
 import { showToast } from "@/lib/toast";
 import { formatLastSeen } from "@/lib/time";
 import { useStore } from "@/lib/store";
@@ -866,6 +867,9 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
           </div>
 
           <div className="cw-header-actions">
+            {/* Labels & status (chat as a mini ticket): staff only */}
+            {activeConv && userRole !== "PROVIDER" && <TicketControl conv={activeConv} />}
+
             {/* In-Chat Search Bar Toggle */}
             <button
               className={`cw-action-btn ${isSearchOpen ? "cw-action-btn--active" : ""}`}

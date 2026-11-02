@@ -13,14 +13,15 @@ import {
   ConversationResponse, UserResponse, PresenceEvent, MemberResponse, MessageResponse, CallResponse,
   ReminderView, TaskView,
 } from "@/types";
-import { subscribe, Topics, disconnectStomp } from "@/lib/socket";
-import { clearAuth } from "@/lib/auth";
-import { disablePush } from "@/lib/push";
+import { subscribe, Topics } from "@/lib/socket";
+import { signOut } from "@/lib/signOut";
 import { playMessageChime } from "@/lib/sound";
 import { desktopNotify } from "@/lib/notify";
 import { showToast } from "@/lib/toast";
 import ActivityPanel, { ActivityTab } from "./ActivityPanel";
 import Avatar from "./Avatar";
+import { LabelChip, StatusChip } from "./TicketControl";
+import { labelColor } from "@/lib/labels";
 import ProfileEditModal from "./ProfileEditModal";
 import DirectoryModal from "./DirectoryModal";
 import AdminPanel, { type AdminSection } from "./AdminPanel";
@@ -189,6 +190,30 @@ export default function Sidebar() {
     setIsAdminOpen(true);
   }, []);
 
+  /* ── chat labels & status: someone in a chat changed them ─────────── */
+  const [ticketFilter, setTicketFilter] = useState<string>("all"); // "all" | "OPEN" | "DONE" | "label:<name>"
+  useEffect(() => {
+    if (!userId || userRole === "PROVIDER") return;
+    let sub: { unsubscribe: () => void } | null = null;
+    (async () => {
+      try {
+        sub = await subscribe("/user/queue/conversation-ticket", (frame) => {
+          const ev = JSON.parse(frame.body) as Pick<ConversationResponse, "labels" | "ticketStatus" | "ticketUpdatedByName" | "ticketUpdatedAt">
+            & { conversationId: number };
+          const s = useStore.getState();
+          const conv = s.conversations.find((c) => c.id === ev.conversationId);
+          if (conv) {
+            s.upsertConversation({ ...conv, labels: ev.labels ?? [], ticketStatus: ev.ticketStatus ?? null,
+              ticketUpdatedByName: ev.ticketUpdatedByName, ticketUpdatedAt: ev.ticketUpdatedAt });
+          }
+        });
+      } catch (err) {
+        console.error("Label subscription error:", err);
+      }
+    })();
+    return () => { sub?.unsubscribe(); };
+  }, [userId, userRole]);
+
   /* ── reports: admins get new-report alerts + badge; reporters hear back when it's reviewed ── */
   useEffect(() => {
     if (!userId) return;
@@ -356,11 +381,21 @@ export default function Sidebar() {
   }, [userId, setStatusForUser]);
 
   /* ── derived data ────────────────────────────────────────────────── */
-  const { sortedConvs, archivedCount, archivedUnread } = useMemo(() => {
+  const { sortedConvs, archivedCount, archivedUnread, ticketCounts, labelsInUse } = useMemo(() => {
+    const q = search.toLowerCase();
+    const matchesTicket = (c: ConversationResponse) =>
+      ticketFilter === "all" ? true
+        : ticketFilter.startsWith("label:")
+          ? (c.labels ?? []).some((l) => l.toLowerCase() === ticketFilter.slice(6).toLowerCase())
+          : c.ticketStatus === ticketFilter;
     const matches = conversations.filter((c) => {
       const name = getDisplayName(c, userId);
-      return name.toLowerCase().includes(search.toLowerCase());
+      // Typing a label's name also finds chats with that label.
+      return (name.toLowerCase().includes(q) || (!!q && (c.labels ?? []).some((l) => l.toLowerCase().includes(q))))
+        && matchesTicket(c);
     });
+    const labelSet = new Map<string, string>();
+    conversations.forEach((c) => (c.labels ?? []).forEach((l) => { if (!labelSet.has(l.toLowerCase())) labelSet.set(l.toLowerCase(), l); }));
     const archived = conversations.filter((c) => c.archived);
     const list = matches
       .filter((c) => (showArchived ? c.archived : !c.archived))
@@ -374,8 +409,13 @@ export default function Sidebar() {
       sortedConvs: list,
       archivedCount: archived.length,
       archivedUnread: archived.filter((c) => c.unreadCount > 0).length,
+      ticketCounts: {
+        OPEN: conversations.filter((c) => c.ticketStatus === "OPEN").length,
+        DONE: conversations.filter((c) => c.ticketStatus === "DONE").length,
+      },
+      labelsInUse: [...labelSet.values()].sort((a, b) => a.localeCompare(b)),
     };
-  }, [conversations, search, userId, showArchived]);
+  }, [conversations, search, userId, showArchived, ticketFilter]);
 
   /* ── keyboard: Alt+↑/↓ switches chats, Ctrl+/ shows shortcuts ───── */
   useEffect(() => {
@@ -475,15 +515,7 @@ export default function Sidebar() {
     }
   };
 
-  const handleLogout = async () => {
-    // Stop push to this browser first (needs the token), so the next person here doesn't get our messages.
-    await disablePush(false);
-    // End the session server-side too, so this token stops working immediately.
-    await apiPost("/api/account/logout").catch(() => {});
-    disconnectStomp().catch(() => {});
-    clearAuth();
-    window.location.href = "/login";
-  };
+  const handleLogout = signOut;
 
   const handleStartDirect = async (otherUserId: number) => {
     try {
@@ -594,6 +626,28 @@ export default function Sidebar() {
       <div className="sb-list">
         {tab === "chats" ? (
           <>
+          {/* Labels & status filter: only once some chat uses them */}
+          {userRole !== "PROVIDER" && (ticketCounts.OPEN + ticketCounts.DONE > 0 || labelsInUse.length > 0 || ticketFilter !== "all") && (
+            <div className="sb-tfilter" role="toolbar" aria-label="Filter by status or label">
+              {[
+                ["all", "All"],
+                ["OPEN", `Open${ticketCounts.OPEN ? ` ${ticketCounts.OPEN}` : ""}`],
+                ["DONE", "Done"],
+                ...labelsInUse.map((l) => [`label:${l}`, l]),
+              ].map(([key, text]) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`sb-tfilter-btn ${ticketFilter === key ? "sb-tfilter-btn--on" : ""}`}
+                  aria-pressed={ticketFilter === key}
+                  onClick={() => setTicketFilter(ticketFilter === key && key !== "all" ? "all" : key)}
+                >
+                  {key.startsWith("label:") && <span className="sb-tfilter-dot" style={{ background: labelColor(text) }} />}
+                  {text}
+                </button>
+              ))}
+            </div>
+          )}
           {showArchived ? (
             <button type="button" className="sb-archived-row" onClick={() => setShowArchived(false)}>
               <ChevronLeft size={16} /> <span>Archived chats</span>
@@ -605,7 +659,7 @@ export default function Sidebar() {
             </button>
           )}
           {sortedConvs.length === 0 ? (
-            <p className="sb-empty">{showArchived ? "No archived chats" : "No conversations yet"}</p>
+            <p className="sb-empty">{ticketFilter !== "all" ? "No chats match this filter" : showArchived ? "No archived chats" : "No conversations yet"}</p>
           ) : (
             sortedConvs.map((conv) => {
               const name = getDisplayName(conv, userId);
@@ -664,6 +718,13 @@ export default function Sidebar() {
                         )}
                       </div>
                     </div>
+                    {(conv.ticketStatus || (conv.labels?.length ?? 0) > 0) && (
+                      <div className="sb-item-tags">
+                        {conv.ticketStatus && <StatusChip status={conv.ticketStatus} />}
+                        {(conv.labels ?? []).slice(0, 2).map((l) => <LabelChip key={l} label={l} />)}
+                        {(conv.labels?.length ?? 0) > 2 && <span className="sb-item-tags-more">+{conv.labels!.length - 2}</span>}
+                      </div>
+                    )}
                   </div>
                 </button>
                 <button
@@ -928,6 +989,13 @@ export default function Sidebar() {
 
         .sb-list { flex:1;overflow-y:auto;padding:0 0.5rem; }
         .sb-empty { padding:3rem 1rem;text-align:center;font-size:0.8125rem;color:var(--text-faint); }
+        .sb-tfilter { display:flex;gap:0.35rem;padding:0.4rem 0.75rem 0.5rem;overflow-x:auto;scrollbar-width:none; }
+        .sb-tfilter::-webkit-scrollbar { display:none; }
+        .sb-tfilter-btn { display:inline-flex;align-items:center;gap:0.3rem;flex-shrink:0;padding:0.25rem 0.65rem;border-radius:999px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-secondary);font-size:0.74rem;font-weight:600;cursor:pointer;white-space:nowrap; }
+        .sb-tfilter-btn--on { background:var(--accent);border-color:var(--accent);color:#fff; }
+        .sb-tfilter-dot { width:8px;height:8px;border-radius:50%; }
+        .sb-item-tags { display:flex;align-items:center;gap:0.25rem;margin-top:0.3rem;overflow:hidden; }
+        .sb-item-tags-more { font-size:0.68rem;font-weight:700;color:var(--text-muted); }
 
         .sb-item { display:flex;align-items:center;gap:0.75rem;padding:0.6rem 0.625rem;border-radius:12px;text-align:left;transition:background 0.12s;width:100%;cursor:pointer; }
         .sb-item:hover { background:var(--bg-hover); }

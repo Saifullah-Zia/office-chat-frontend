@@ -1,5 +1,5 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
-import { getToken, clearAuth } from "@/lib/auth";
+import { getToken, clearAuth, getDeviceId } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
 import { API_BASE } from "@/lib/config";
 
@@ -16,6 +16,12 @@ api.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     // Only skip auth header for the login endpoint
     const isLoginEndpoint = config.url === "/api/auth/login";
+    // Lets the server recognise this browser and email a "new device" alert when it doesn't.
+    // Not on register: an admin adding someone would otherwise tie the new account to the admin's browser.
+    if (config.url === "/api/auth/login" || config.url === "/api/auth/login/verify") {
+      const deviceId = getDeviceId();
+      if (deviceId) config.headers.set("X-Device-Id", deviceId);
+    }
     if (!isLoginEndpoint) {
       const token = getToken();
       if (token) {
