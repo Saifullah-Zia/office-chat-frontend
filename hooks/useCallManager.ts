@@ -265,13 +265,22 @@ export function useCallManager(myUserId: number | null) {
       if (call.isGroup) stopPresence();
     }
 
-    // Release effect processors, then close local tracks
-    denoiseProcRef.current?.unpipe();
-    denoiseProcRef.current?.destroy().catch(() => {});
+    // Release effect processors: disconnect track -> processor -> output first, then free them
+    // (destroying one that's still connected fails and leaks it).
+    const denoiser = denoiseProcRef.current;
+    const blurProc = blurProcRef.current;
     denoiseProcRef.current = null;
-    blurProcRef.current?.unpipe();
-    blurProcRef.current?.release().catch(() => {});
     blurProcRef.current = null;
+    if (denoiser) {
+      localAudioTrackRef.current?.unpipe();
+      denoiser.unpipe();
+      Promise.resolve().then(() => denoiser.disable()).catch(() => {}).finally(() => denoiser.destroy().catch(() => {}));
+    }
+    if (blurProc) {
+      localVideoTrackRef.current?.unpipe();
+      blurProc.unpipe();
+      Promise.resolve().then(() => blurProc.disable()).catch(() => {}).finally(() => blurProc.release().catch(() => {}));
+    }
     setNoiseSuppressionState(false);
     setBackgroundBlurState(false);
 
