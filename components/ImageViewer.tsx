@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { X, ChevronLeft, ChevronRight, Download, ZoomIn, ZoomOut, ExternalLink } from "lucide-react";
-import { downloadHref } from "@/lib/media";
+import { downloadHref, saveFile } from "@/lib/media";
 
 export interface ViewerImage {
   id: number;
@@ -66,7 +66,7 @@ export default function ImageViewer({ images, startIndex, onClose }: ImageViewer
           <button type="button" onClick={() => setZoomStep((z) => Math.max(z - 1, 0))} disabled={zoomStep === 0} aria-label="Zoom out"><ZoomOut size={18} /></button>
           <button type="button" onClick={() => setZoomStep((z) => Math.min(z + 1, ZOOMS.length - 1))} disabled={zoomStep === ZOOMS.length - 1} aria-label="Zoom in"><ZoomIn size={18} /></button>
           <a href={image.url} target="_blank" rel="noopener noreferrer" aria-label="Open original"><ExternalLink size={18} /></a>
-          <a href={downloadHref(image.url)} download={image.name} aria-label="Download"><Download size={18} /></a>
+          <a href={downloadHref(image.url)} download={image.name} aria-label="Download" onClick={(e) => { e.preventDefault(); e.stopPropagation(); void saveFile(image.url, image.name); }}><Download size={18} /></a>
           <button type="button" onClick={onClose} aria-label="Close"><X size={20} /></button>
         </div>
       </header>

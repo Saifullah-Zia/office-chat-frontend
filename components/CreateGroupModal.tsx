@@ -1,5 +1,6 @@
 "use client";
 
+import { useEscapeKey } from "@/hooks/useEscapeKey";
 import { useState } from "react";
 import { X, Users, Check, Search, Loader2 } from "lucide-react";
 import { apiPost } from "@/lib/api";
@@ -26,6 +27,8 @@ export default function CreateGroupModal({
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  useEscapeKey(onClose, isOpen);
 
   if (!isOpen) return null;
 
@@ -84,14 +87,14 @@ export default function CreateGroupModal({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="cgm-title" onClick={(e) => e.stopPropagation()}>
         <header className="modal-header">
           <div className="modal-title-group">
             <div className="modal-icon">
               <Users size={20} />
             </div>
             <div>
-              <h2 className="modal-title">Create Group Chat</h2>
+              <h2 className="modal-title" id="cgm-title">Create Group Chat</h2>
               <p className="modal-sub">Start a team conversation</p>
             </div>
           </div>
@@ -157,7 +160,7 @@ export default function CreateGroupModal({
                     className={`user-picker-item ${isSelected ? "user-picker-item--selected" : ""}`}
                     onClick={() => toggleUser(u.id)}
                   >
-                    <Avatar name={u.name} size={36} />
+                    <Avatar userId={u.id} name={u.name} size={36} />
                     <div className="user-picker-info">
                       <span className="user-picker-name">{u.name}</span>
                       <span className="user-picker-sub">{u.department || u.email}</span>

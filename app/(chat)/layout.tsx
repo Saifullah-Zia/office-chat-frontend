@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { isAuthenticated } from "@/lib/auth";
 import { useStore } from "@/lib/store";
@@ -9,9 +9,9 @@ import { useCallManager } from "@/hooks/useCallManager";
 import IncomingCallOverlay from "@/components/IncomingCallOverlay";
 import CallWindow from "@/components/CallWindow";
 import { CallContext } from "@/context/CallContext";
-import { CallType } from "@/types/call";
 import GlobalSearchModal from "@/components/GlobalSearchModal";
 import Toaster from "@/components/Toaster";
+import { syncPushSubscription } from "@/lib/push";
 
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -44,20 +44,41 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
       Notification.requestPermission().catch(() => {});
     }
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- render the app only after the session is restored from storage
     setReady(true);
   }, [router]);
 
   const userId = useStore((s) => s.userId);
-  const incomingCallTypeRef = useRef<CallType>("AUDIO");
 
   const userName = useStore((s) => s.userName);
   const activeConversationId = useStore((s) => s.activeConversationId);
   const pathname = usePathname() ?? "/";
 
-  // Installable app: register the service worker (production only — it would cache dev builds).
+  // Service worker: offline support + push notifications. In development it runs with caching off
+  // (?dev=1) so it never serves stale builds, but push still works.
   useEffect(() => {
-    if (process.env.NODE_ENV !== "production" || !("serviceWorker" in navigator)) return;
-    navigator.serviceWorker.register("/sw.js").catch((err) => console.warn("Service worker registration failed:", err));
+    if (!("serviceWorker" in navigator)) return;
+    const url = process.env.NODE_ENV === "production" ? "/sw.js" : "/sw.js?dev=1";
+    navigator.serviceWorker.register(url)
+      .then(() => syncPushSubscription())
+      .catch((err) => console.warn("Service worker registration failed:", err));
+
+    // A tapped push notification asks the open window to show that chat.
+    const onMessage = (e: MessageEvent) => {
+      if (e.data?.type === "open-chat" && typeof e.data.conversationId === "number") {
+        useStore.getState().openChatAt(e.data.conversationId, e.data.messageId ?? null);
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+
+    // ...or, if the app was closed, opens it at /?chat=<id>.
+    const params = new URLSearchParams(window.location.search);
+    const chat = Number(params.get("chat"));
+    if (chat > 0) {
+      useStore.getState().openChatAt(chat, Number(params.get("message")) || null);
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
   }, []);
   const {
     activeCall,

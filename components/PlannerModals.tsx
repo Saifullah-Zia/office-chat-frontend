@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { X, Clock, AlarmClock, ListTodo, Loader2, CheckCircle2 } from "lucide-react";
-import { apiPost, apiErrorMessage } from "@/lib/api";
+import { X, Clock, AlarmClock, ListTodo, Loader2, CheckCircle2, Paperclip } from "lucide-react";
+import { apiPost, apiPostForm, apiErrorMessage } from "@/lib/api";
 import { useStore } from "@/lib/store";
-import { MemberResponse, MessageResponse, ScheduledMessageView, TaskView } from "@/types";
+import { AttachmentResponse, MemberResponse, MessageResponse, ScheduledMessageView, TaskView } from "@/types";
 
 // ── Time presets ─────────────────────────────────────────────────────
 
@@ -125,6 +125,10 @@ function Shell({ title, icon, onClose, children, footer }: {
         .plm-field { border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 0.65rem; font: inherit; font-size: 0.86rem; background: var(--bg-secondary); color: var(--text-primary); outline: none; width: 100%; }
         .plm-field:focus { border-color: var(--accent); }
         textarea.plm-field { resize: vertical; }
+        .plm-files { list-style: none; margin: 0.5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+        .plm-files li { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--text-secondary); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 0.3rem 0.5rem; }
+        .plm-files span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .plm-files button { background: none; border: none; color: var(--text-muted); cursor: pointer; display: flex; padding: 0.15rem; }
         .plm-error { margin: 0; color: var(--danger); font-size: 0.8rem; }
         .plm-cancel { border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-secondary); border-radius: 10px; padding: 0.5rem 0.9rem; font-weight: 600; font-size: 0.84rem; cursor: pointer; }
         .plm-submit { display: inline-flex; align-items: center; gap: 0.4rem; border: none; background: var(--accent); color: #fff; border-radius: 10px; padding: 0.5rem 1rem; font-weight: 600; font-size: 0.84rem; cursor: pointer; }
@@ -144,26 +148,40 @@ function Shell({ title, icon, onClose, children, footer }: {
 
 // ── Send later ───────────────────────────────────────────────────────
 
-export function ScheduleMessageModal({ conversationId, initialText, onClose, onScheduled }: {
+export function ScheduleMessageModal({ conversationId, initialText, initialFiles = [], onClose, onScheduled }: {
   conversationId: number;
   initialText: string;
+  /** Files from the composer; each is sent as its own message, like a normal send. */
+  initialFiles?: File[];
   onClose: () => void;
   onScheduled: (s: ScheduledMessageView) => void;
 }) {
   const [text, setText] = useState(initialText);
+  const [files, setFiles] = useState<File[]>(initialFiles);
   const [when, setWhen] = useState<Date | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
-    if (!when || !text.trim()) return;
+    if (!when || (!text.trim() && files.length === 0)) return;
     setBusy(true);
     setError(null);
     try {
-      const s = await apiPost<ScheduledMessageView>("/api/scheduled", {
-        conversationId, content: text.trim(), sendAt: when.toISOString(),
-      });
-      onScheduled(s);
+      if (files.length === 0) {
+        onScheduled(await apiPost<ScheduledMessageView>("/api/scheduled", {
+          conversationId, content: text.trim(), sendAt: when.toISOString(),
+        }));
+      } else {
+        for (const [i, file] of files.entries()) {
+          const form = new FormData();
+          form.append("file", file);
+          form.append("conversationId", conversationId.toString());
+          const att = await apiPostForm<AttachmentResponse>("/api/files/upload", form);
+          onScheduled(await apiPost<ScheduledMessageView>("/api/scheduled", {
+            conversationId, content: i === 0 ? text.trim() : "", sendAt: when.toISOString(), attachmentId: att.id,
+          }));
+        }
+      }
       onClose();
     } catch (err) {
       setError(apiErrorMessage(err) ?? "Couldn't schedule the message.");
@@ -179,13 +197,25 @@ export function ScheduleMessageModal({ conversationId, initialText, onClose, onS
       onClose={onClose}
       footer={<>
         <button type="button" className="plm-cancel" onClick={onClose}>Cancel</button>
-        <button type="button" className="plm-submit" disabled={!when || !text.trim() || busy} onClick={submit}>
+        <button type="button" className="plm-submit" disabled={!when || (!text.trim() && files.length === 0) || busy} onClick={submit}>
           {busy && <Loader2 size={14} className="spin" />} Schedule
         </button>
       </>}
     >
       <p className="plm-label">Message</p>
       <textarea className="plm-field" rows={3} maxLength={10000} value={text} onChange={(e) => setText(e.target.value)} autoFocus />
+      {files.length > 0 && (
+        <ul className="plm-files">
+          {files.map((f, i) => (
+            <li key={`${f.name}-${i}`}>
+              <Paperclip size={13} /> <span>{f.name}</span>
+              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles((list) => list.filter((_, j) => j !== i))}>
+                <X size={13} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <p className="plm-label">When</p>
       <WhenPicker value={when} onChange={setWhen} />
       {error && <p className="plm-error">{error}</p>}

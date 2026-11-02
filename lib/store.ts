@@ -25,6 +25,8 @@ interface AppState {
   // Users directory
   users: UserResponse[];
   setUsers: (users: UserResponse[]) => void;
+  /** Replace one user (live profile/photo updates). */
+  upsertUser: (user: UserResponse) => void;
 
   // Online presence
   onlineUserIds: Set<number>;
@@ -146,6 +148,15 @@ export const useStore = create<AppState>()((set) => ({
   },
 
   users: [],
+  upsertUser: (user) =>
+    set((s) => ({
+      users: s.users.some((u) => u.id === user.id)
+        // A live update may withhold a provider's email; keep the copy an admin already has.
+        ? s.users.map((u) => (u.id === user.id
+            ? { ...u, ...user, ...(user.emailHidden && u.email ? { email: u.email, emailHidden: false } : {}) }
+            : u))
+        : [...s.users, user],
+    })),
   setUsers: (users) =>
     set((s) => {
       const nextStatuses = { ...s.statusesByUserId };

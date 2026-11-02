@@ -1,12 +1,17 @@
 "use client";
 
+import { useEscapeKey } from "@/hooks/useEscapeKey";
 import { useState, useEffect, useCallback } from "react";
-import { X, Shield, ShieldOff, UserX, UserCheck, ChevronDown } from "lucide-react";
-import { apiGet, apiDelete, apiPut } from "@/lib/api";
+import { X, Shield, UserX, UserCheck, ChevronDown, UserPlus, FileUp } from "lucide-react";
+import { apiGet, apiDelete, apiPut, apiErrorMessage } from "@/lib/api";
 import { UserResponse, Role } from "@/types";
 import Avatar from "./Avatar";
 import AdminReports from "./AdminReports";
 import AdminAudit from "./AdminAudit";
+import AdminAnalytics from "./AdminAnalytics";
+import AdminPolicies from "./AdminPolicies";
+import AddUserModal from "./AddUserModal";
+import ImportUsersModal from "./ImportUsersModal";
 
 interface AdminPanelProps {
   open: boolean;
@@ -20,7 +25,7 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [filter, setFilter] = useState<"all" | "active" | "inactive">("all");
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
-  const [section, setSection] = useState<"users" | "reports" | "audit">("users");
+  const [section, setSection] = useState<"users" | "analytics" | "reports" | "audit" | "policies">("users");
   const [openReports, setOpenReports] = useState(0);
 
   useEffect(() => {
@@ -30,19 +35,25 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
       .catch(() => {});
   }, [open]);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isAddUserOpen, setIsAddUserOpen] = useState(false);
+  const [isImportOpen, setIsImportOpen] = useState(false);
+
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     try {
       const users = await apiGet<UserResponse[]>("/api/users/admin/all");
       setAllUsers(users);
+      setLoadError(null);
     } catch (err) {
-      console.error("Failed to fetch admin users:", err);
+      setLoadError(apiErrorMessage(err) ?? "Couldn't reach the server. Check that the backend is running.");
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load the user list when the panel opens
     if (open) fetchUsers();
   }, [open, fetchUsers]);
 
@@ -95,27 +106,31 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
     return true;
   });
 
+  useEscapeKey(onClose, open);
+
   if (!open) return null;
 
   return (
     <>
       <div className="ap-backdrop" onClick={onClose} />
-      <div className="ap-panel">
+      <div className="ap-panel" role="dialog" aria-modal="true" aria-labelledby="ap-title">
         {/* Header */}
         <div className="ap-header">
           <div className="ap-header-left">
             <Shield size={20} />
-            <h2>Admin Panel</h2>
+            <h2 id="ap-title">Admin Panel</h2>
           </div>
-          <button className="ap-close" onClick={onClose}><X size={18} /></button>
+          <button className="ap-close" onClick={onClose} aria-label="Close admin panel"><X size={18} /></button>
         </div>
 
         {/* Section switcher */}
         <div className="ap-sections" role="tablist">
           {([
             ["users", "Users"],
+            ["analytics", "Analytics"],
             ["reports", openReports > 0 ? `Reports (${openReports})` : "Reports"],
             ["audit", "Audit log"],
+            ["policies", "Policies"],
           ] as const).map(([key, label]) => (
             <button
               key={key}
@@ -131,6 +146,8 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
 
         {section === "reports" && <AdminReports onCountChange={setOpenReports} />}
         {section === "audit" && <AdminAudit />}
+        {section === "analytics" && <AdminAnalytics />}
+        {section === "policies" && <AdminPolicies />}
 
         {section === "users" && (<>
         {/* Stats bar */}
@@ -147,10 +164,20 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
             <span className="ap-stat-num">{allUsers.filter((u) => u.role === "ADMIN").length}</span>
             <span className="ap-stat-label">Admins</span>
           </div>
+          <div className="ap-stat">
+            <span className="ap-stat-num">{allUsers.filter((u) => u.role === "PROVIDER").length}</span>
+            <span className="ap-stat-label">Providers</span>
+          </div>
         </div>
 
         {/* Filter tabs */}
         <div className="ap-filters">
+          <button type="button" className="ap-add-btn" onClick={() => setIsAddUserOpen(true)}>
+            <UserPlus size={14} /> Add employee
+          </button>
+          <button type="button" className="ap-add-btn ap-add-btn--ghost" onClick={() => setIsImportOpen(true)} title="Import many employees from a CSV file">
+            <FileUp size={14} /> Import CSV
+          </button>
           {(["all", "active", "inactive"] as const).map((f) => (
             <button
               key={f}
@@ -169,6 +196,8 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
         <div className="ap-list">
           {loading ? (
             <div className="ap-loading">Loading users...</div>
+          ) : loadError ? (
+            <div className="ap-empty" role="alert">{loadError} <button type="button" className="ap-retry" onClick={fetchUsers}>Retry</button></div>
           ) : filtered.length === 0 ? (
             <div className="ap-empty">No users found</div>
           ) : (
@@ -176,13 +205,13 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
               <div key={user.id} className={`ap-user ${!user.active ? "ap-user--inactive" : ""}`}>
                 <div className="ap-user-left">
                   <div className="ap-avatar-wrap">
-                    <Avatar name={user.name} size={40} />
+                    <Avatar userId={user.id} name={user.name} size={40} />
                     {!user.active && <span className="ap-deactivated-badge">✕</span>}
                   </div>
                   <div className="ap-user-info">
                     <div className="ap-user-name-row">
                       <span className="ap-user-name">{user.name}</span>
-                      <span className={`ap-role-badge ${user.role === "ADMIN" ? "ap-role-badge--admin" : ""}`}>
+                      <span className={`ap-role-badge ${user.role === "ADMIN" ? "ap-role-badge--admin" : user.role === "PROVIDER" ? "ap-role-badge--provider" : ""}`}>
                         {user.role}
                       </span>
                     </div>
@@ -201,6 +230,7 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
                       className="ap-select"
                     >
                       <option value="EMPLOYEE">Employee</option>
+                      <option value="PROVIDER">Provider</option>
                       <option value="ADMIN">Admin</option>
                     </select>
                     <ChevronDown size={12} className="ap-select-icon" />
@@ -253,13 +283,23 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
         </>)}
       </div>
 
+      {/* Beside the panel (not inside it) so it layers above it */}
+      <AddUserModal
+        isOpen={isAddUserOpen}
+        onClose={() => setIsAddUserOpen(false)}
+        onUserAdded={() => { fetchUsers(); onUsersChanged(); }}
+      />
+      {isImportOpen && (
+        <ImportUsersModal onClose={() => setIsImportOpen(false)} onImported={() => { fetchUsers(); onUsersChanged(); }} />
+      )}
+
       <style jsx>{`
         .ap-sections {
           display: flex; gap: 4px; margin: 0.75rem 1.25rem 0; padding: 3px; border-radius: 10px;
           background: var(--bg-tertiary);
         }
         .ap-section-btn {
-          flex: 1; border: none; background: transparent; padding: 0.45rem; border-radius: 8px; cursor: pointer;
+          flex: 1; white-space: nowrap; border: none; background: transparent; padding: 0.45rem; border-radius: 8px; cursor: pointer;
           font-size: 0.8rem; font-weight: 600; color: var(--text-muted);
         }
         .ap-section-btn--on { background: var(--bg-primary); color: var(--accent); box-shadow: var(--shadow-sm); }
@@ -333,8 +373,15 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
           margin-top: 2px;
         }
 
+        .ap-add-btn {
+          order: 1; margin-left: auto; display: inline-flex; align-items: center; gap: 0.35rem;
+          padding: 0.35rem 0.75rem; border-radius: var(--radius-md); border: none;
+          background: var(--accent); color: var(--text-on-accent, #fff); font-size: 0.78rem; font-weight: 600; cursor: pointer;
+          white-space: nowrap; flex-shrink: 0;
+        }
+        .ap-add-btn--ghost { order: 2; margin-left: 0; background: var(--bg-tertiary); color: var(--text-primary); }
         .ap-filters {
-          display: flex; gap: 0.5rem;
+          display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;
           padding: 0.75rem 1.5rem;
           border-bottom: 1px solid var(--border);
         }
@@ -344,7 +391,7 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
           border: 1px solid var(--border-subtle);
           color: var(--text-muted); font-size: 0.78rem;
           cursor: pointer;
-          display: flex; align-items: center; gap: 0.4rem;
+          display: flex; align-items: center; gap: 0.4rem; white-space: nowrap;
           transition: all 0.15s; font-weight: 500;
         }
         .ap-filter-btn:hover {
@@ -369,13 +416,14 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
           flex: 1; overflow-y: auto;
           padding: 0.5rem 1rem;
         }
+        .ap-retry { margin-left: 0.4rem; background: none; border: none; color: var(--accent); font-weight: 600; cursor: pointer; text-decoration: underline; }
         .ap-loading, .ap-empty {
           text-align: center; padding: 2rem;
           color: var(--text-faint); font-size: 0.85rem;
         }
 
         .ap-user {
-          display: flex; align-items: center; justify-content: space-between;
+          display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
           padding: 0.75rem 0.65rem; border-radius: var(--radius-lg);
           transition: background 0.15s;
         }
@@ -394,19 +442,25 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
           display: flex; align-items: center; justify-content: center;
           border: 2px solid var(--surface-card);
         }
-        .ap-user-info { min-width: 0; }
+        .ap-user-info { min-width: 0; flex: 1; }
         .ap-user-name-row {
-          display: flex; align-items: center; gap: 0.5rem;
+          display: flex; align-items: center; gap: 0.5rem; min-width: 0;
         }
         .ap-user-name {
           font-weight: 600; font-size: 0.875rem;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
           color: var(--text-primary);
         }
         .ap-role-badge {
+          flex-shrink: 0;
           font-size: 0.6rem; padding: 2px 6px; border-radius: 4px;
           background: var(--bg-tertiary); color: var(--text-muted);
           font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
           border: 1px solid var(--border-subtle);
+        }
+        .ap-role-badge--provider {
+          background: rgba(13,148,136,0.12); color: #0d9488;
+          border-color: rgba(13,148,136,0.25);
         }
         .ap-role-badge--admin {
           background: rgba(168,85,247,0.12); color: #a855f7;
@@ -414,10 +468,12 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
         }
         .ap-user-email {
           font-size: 0.75rem; color: var(--text-muted);
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
           display: block; margin-top: 1px;
         }
         .ap-user-dept {
           font-size: 0.7rem; color: var(--accent);
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
           display: block; margin-top: 1px;
         }
 
@@ -476,6 +532,26 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
         .ap-confirm-text {
           font-size: 0.72rem; color: var(--danger); font-weight: 600;
         }
+        /* Phones: full-screen sheet; each user row stacks its controls under the name */
+        @media (max-width: 600px) {
+          .ap-panel {
+            top: 0; left: 0; transform: none; width: 100vw; max-height: none; height: 100dvh;
+            border-radius: 0; border: none; animation: none;
+          }
+          .ap-header { padding: 0.9rem 1rem; }
+          .ap-sections { margin: 0.6rem 0.75rem 0; overflow-x: auto; scrollbar-width: none; }
+          .ap-section-btn { flex: 1 0 auto; padding: 0.45rem 0.7rem; }
+          .ap-stats { padding: 0.75rem; gap: 0.5rem; }
+          .ap-stat-num { font-size: 1.2rem; }
+          .ap-stat-label { font-size: 0.62rem; letter-spacing: 0.2px; }
+          .ap-filters { padding: 0.6rem 0.75rem; flex-wrap: wrap; }
+          .ap-list { padding: 0.4rem 0.5rem; }
+          .ap-user { flex-wrap: wrap; align-items: flex-start; padding: 0.75rem 0.5rem; border-bottom: 1px solid var(--border-subtle); border-radius: 0; }
+          .ap-user-actions { width: 100%; padding-left: calc(40px + 0.75rem); }
+          .ap-role-select { flex: 1; }
+          .ap-select { width: 100%; padding-top: 0.45rem; padding-bottom: 0.45rem; }
+        }
+
       `}</style>
     </>
   );

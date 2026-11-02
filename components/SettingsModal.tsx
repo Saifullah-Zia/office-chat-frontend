@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { X, Settings, Sun, Moon, Bell, Keyboard, Type, Image as ImageIcon, Volume2, Shield } from "lucide-react";
+import { X, Settings, Sun, Moon, Bell, Keyboard, Type, Image as ImageIcon, Volume2, Shield, Smartphone, Zap } from "lucide-react";
+import QuickRepliesModal from "./QuickRepliesModal";
+import { currentSubscription, disablePush, enablePush, pushSupported } from "@/lib/push";
+import { showToast } from "@/lib/toast";
 import SecuritySettings from "./SecuritySettings";
 import type { Theme } from "@/hooks/useTheme";
 import {
@@ -86,7 +89,34 @@ export default function SettingsModal({ onClose, theme, setTheme }: SettingsModa
     setNotif(await Notification.requestPermission());
   };
 
+  const [quickRepliesOpen, setQuickRepliesOpen] = useState(false);
+  const [pushOn, setPushOn] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  useEffect(() => {
+    currentSubscription().then((s) => setPushOn(!!s)).catch(() => {});
+  }, []);
+  const togglePush = async (on: boolean) => {
+    setPushBusy(true);
+    try {
+      if (on) {
+        const ok = await enablePush();
+        setPushOn(ok);
+        setNotif(readNotifPermission());
+        if (!ok) showToast("Allow notifications in your browser to turn this on.");
+      } else {
+        await disablePush();
+        setPushOn(false);
+      }
+    } catch {
+      showToast("Couldn't change push notifications.");
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
   return (
+    <>
+    {quickRepliesOpen && <QuickRepliesModal onClose={() => setQuickRepliesOpen(false)} onChanged={() => {}} />}
     <div className="stm-overlay" onClick={onClose}>
       <div className="stm-modal" role="dialog" aria-modal="true" aria-label="Settings" onClick={(e) => e.stopPropagation()}>
         <header className="stm-header">
@@ -161,6 +191,20 @@ export default function SettingsModal({ onClose, theme, setTheme }: SettingsModa
               ) : (
                 <button type="button" className="stm-btn" onClick={enableNotifications}>Turn on</button>
               )}
+            </div>
+            {pushSupported() && notif !== "denied" && (
+              <label className="stm-row">
+                <span><Smartphone size={15} /> Notify me when the app is closed</span>
+                <input type="checkbox" checked={pushOn} disabled={pushBusy} onChange={(e) => togglePush(e.target.checked)} />
+              </label>
+            )}
+          </section>
+
+          <section className="stm-section">
+            <h4><Zap size={14} /> Quick replies</h4>
+            <div className="stm-row">
+              <span>Saved replies you insert by typing / in a chat</span>
+              <button type="button" className="stm-btn" onClick={() => setQuickRepliesOpen(true)}>Manage</button>
             </div>
           </section>
 
@@ -289,5 +333,6 @@ export default function SettingsModal({ onClose, theme, setTheme }: SettingsModa
         }
       `}</style>
     </div>
+    </>
   );
 }

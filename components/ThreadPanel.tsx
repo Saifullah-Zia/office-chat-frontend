@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { X, Send, Loader2, MessagesSquare } from "lucide-react";
-import { apiGet, apiPost, apiErrorMessage } from "@/lib/api";
+import { apiGet, apiErrorMessage, postMessage } from "@/lib/api";
 import { useStore } from "@/lib/store";
-import { MessageResponse } from "@/types";
+import { MessageResponse, TypingEvent, TypingRequest } from "@/types";
+import { Destinations, Topics, publish, subscribe } from "@/lib/socket";
 import MessageBubble from "./MessageBubble";
 
 interface ThreadPanelProps {
@@ -25,6 +26,44 @@ export default function ThreadPanel({ conversationId, rootId, canPost, onClose }
   const [sending, setSending] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  // Who is typing in this thread, by user id, with a timer that clears a stale entry.
+  const [typers, setTypers] = useState<Record<number, string>>({});
+  const typerTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+  const lastTypingSent = useRef(0);
+
+  useEffect(() => {
+    let sub: { unsubscribe: () => void } | null = null;
+    let cancelled = false;
+    const timers = typerTimers.current;
+    subscribe(Topics.typing(conversationId), (frame) => {
+      const ev: TypingEvent = JSON.parse(frame.body);
+      if (ev.threadRootId !== rootId || ev.userId === useStore.getState().userId) return;
+      clearTimeout(timers[ev.userId]);
+      if (ev.typing) {
+        setTypers((t) => ({ ...t, [ev.userId]: ev.userName }));
+        // Drop the indicator if the "stopped typing" event never arrives.
+        timers[ev.userId] = setTimeout(() => {
+          setTypers((t) => { const n = { ...t }; delete n[ev.userId]; return n; });
+        }, 6000);
+      } else {
+        setTypers((t) => { const n = { ...t }; delete n[ev.userId]; return n; });
+      }
+    }).then((s) => { if (cancelled) s?.unsubscribe(); else sub = s; }).catch(() => {});
+    return () => {
+      cancelled = true;
+      sub?.unsubscribe();
+      Object.values(timers).forEach(clearTimeout);
+    };
+  }, [conversationId, rootId]);
+
+  const sendTyping = (typing: boolean) => {
+    const now = Date.now();
+    // At most one "typing" event every 3s; "stopped" always goes out.
+    if (typing && now - lastTypingSent.current < 3000) return;
+    lastTypingSent.current = typing ? now : 0;
+    publish(Destinations.typing(), { conversationId, typing, threadRootId: rootId } satisfies Omit<TypingRequest, "userId" | "userName">)
+      .catch(() => {});
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -50,9 +89,11 @@ export default function ThreadPanel({ conversationId, rootId, canPost, onClose }
     if (!content || sending) return;
     setSending(true);
     try {
-      const reply = await apiPost<MessageResponse>(`/api/conversations/${conversationId}/messages/${rootId}/thread`, { content });
+      const reply = await postMessage<MessageResponse>(`/api/conversations/${conversationId}/messages/${rootId}/thread`, { content });
+      if (!reply) return; // cancelled at the sensitive-data warning; text stays in the box
       useStore.getState().addMessage(reply);
       setText("");
+      sendTyping(false);
     } catch (err) {
       alert(apiErrorMessage(err) ?? "Couldn't send the reply.");
     } finally {
@@ -88,6 +129,12 @@ export default function ThreadPanel({ conversationId, rootId, canPost, onClose }
         <div ref={bottomRef} />
       </div>
 
+      {Object.keys(typers).length > 0 && (
+        <p className="thp-typing" aria-live="polite">
+          {Object.values(typers).join(", ")} {Object.keys(typers).length === 1 ? "is" : "are"} typing…
+        </p>
+      )}
+
       {canPost && root && !root.deleted ? (
         <form className="thp-form" onSubmit={send}>
           <input
@@ -95,7 +142,8 @@ export default function ThreadPanel({ conversationId, rootId, canPost, onClose }
             placeholder="Reply in thread…"
             maxLength={10000}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => { setText(e.target.value); sendTyping(e.target.value.length > 0); }}
+            onBlur={() => sendTyping(false)}
             autoFocus
           />
           <button type="submit" className="thp-send" disabled={!text.trim() || sending} aria-label="Send reply">
@@ -116,6 +164,7 @@ export default function ThreadPanel({ conversationId, rootId, canPost, onClose }
         .thp-divider { display: flex; align-items: center; gap: 0.6rem; margin: 0.75rem 0; color: var(--text-faint); font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
         .thp-divider::before, .thp-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
         .thp-empty { display: flex; align-items: center; gap: 0.4rem; color: var(--text-faint); font-size: 0.85rem; }
+        .thp-typing { margin: 0; padding: 0.3rem 1rem; font-size: 0.75rem; font-style: italic; color: var(--text-muted); border-top: 1px solid var(--border); }
         .thp-form { display: flex; gap: 0.5rem; padding: 0.75rem; border-top: 1px solid var(--border); }
         .thp-input { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 12px; padding: 0.6rem 0.8rem; font: inherit; font-size: 0.9rem; background: var(--bg-secondary); color: var(--text-primary); outline: none; }
         .thp-input:focus { border-color: var(--accent); }

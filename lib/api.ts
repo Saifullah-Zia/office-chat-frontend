@@ -74,3 +74,17 @@ export const apiPut = <T>(url: string, body?: unknown) =>
 
 export const apiDelete = <T>(url: string) =>
   api.delete<T>(url).then((r) => r.data);
+
+/**
+ * Send a chat message. If data-loss prevention flags it (HTTP 428), ask "send anyway?" and
+ * re-send with dlpConfirmed. Returns null when the sender cancels.
+ */
+export async function postMessage<T>(url: string, body: object): Promise<T | null> {
+  try {
+    return await apiPost<T>(url, body);
+  } catch (err) {
+    if ((err as AxiosError)?.response?.status !== 428) throw err;
+    if (!window.confirm(apiErrorMessage(err) ?? "This message may contain sensitive data. Send anyway?")) return null;
+    return apiPost<T>(url, { ...body, dlpConfirmed: true });
+  }
+}

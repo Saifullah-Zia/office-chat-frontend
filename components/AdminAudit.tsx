@@ -20,6 +20,13 @@ const ACTION_FILTERS: { value: string; label: string }[] = [
   { value: "USER_ROLE_CHANGED", label: "Roles changed" },
   { value: "REPORT_RESOLVED", label: "Reports resolved" },
   { value: "REPORT_DISMISSED", label: "Reports dismissed" },
+  { value: "CONVERSATION_EXPORTED", label: "Conversations exported" },
+  { value: "PERSONAL_DATA_EXPORTED", label: "Personal data exported" },
+  { value: "DLP_BLOCKED", label: "Sensitive data blocked" },
+  { value: "DLP_WARNING_OVERRIDDEN", label: "Sensitive-data warnings overridden" },
+  { value: "DLP_MODE_CHANGED", label: "Data-loss policy changed" },
+  { value: "USERS_IMPORTED", label: "Users imported from CSV" },
+  { value: "USER_PROFILE_CHANGED", label: "Profiles edited by admin" },
 ];
 
 interface AuditPage {

@@ -125,7 +125,7 @@ export default function ForwardModal({ message, onClose }: ForwardModalProps) {
                   {c.type === "GROUP" ? (
                     <div className="fwd-group-icon"><Users size={16} /></div>
                   ) : (
-                    <Avatar name={name} src={other?.profilePicUrl} size={36} />
+                    <Avatar userId={other?.id} name={name} src={other?.profilePicUrl} size={36} />
                   )}
                   <div className="fwd-item-text">
                     <span className="fwd-item-name">{name}</span>

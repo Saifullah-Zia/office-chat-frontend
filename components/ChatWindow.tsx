@@ -1,16 +1,21 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, type ReactNode } from "react";
 import {
   Phone, Video, Send, Paperclip, Mic, X, Loader2, Users, Search, Smile, Info, CornerDownRight, Vote, Pin, ChevronRight,
-  ChevronDown, Clock, ChevronLeft, Timer, Plus,
+  ChevronDown, Clock, ChevronLeft, Timer, Plus, Sparkles,
 } from "lucide-react";
+import SummaryModal from "./SummaryModal";
+import RichTextRenderer from "./RichTextRenderer";
+import QuickRepliesModal from "./QuickRepliesModal";
+import { QuickReply, loadQuickReplies } from "@/lib/templates";
+import { aiEnabled } from "@/lib/ai";
 import { ScheduleMessageModal, formatWhen } from "./PlannerModals";
 import ThreadPanel from "./ThreadPanel";
 import { showToast } from "@/lib/toast";
 import { formatLastSeen } from "@/lib/time";
 import { useStore } from "@/lib/store";
-import { apiGet, apiPost, apiPostForm, apiDelete } from "@/lib/api";
+import { apiGet, apiPost, apiPostForm, apiDelete, apiErrorMessage, postMessage } from "@/lib/api";
 import {
   ConversationResponse, MessageResponse, MessageRequest, ScheduledMessageView,
   AttachmentResponse, TypingEvent, TypingRequest, MemberResponse,
@@ -69,7 +74,6 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   const addMessage = useStore((s) => s.addMessage);
 
   const onlineUserIds = useStore((s) => s.onlineUserIds);
-  const statusesByUserId = useStore((s) => s.statusesByUserId);
 
   const selectConvTyping = useCallback(
     (s: { typingByConv: Record<number, Set<string>> }) =>
@@ -89,6 +93,13 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   const [threadRootId, setThreadRootId] = useState<number | null>(null);
   const [isComposerMenuOpen, setIsComposerMenuOpen] = useState(false);
   const hasDraftToSend = !!text.trim() || selectedFiles.length > 0;
+  const [isSummaryOpen, setIsSummaryOpen] = useState(false);
+  const [canSummarize, setCanSummarize] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    aiEnabled().then((on) => { if (alive) setCanSummarize(on); });
+    return () => { alive = false; };
+  }, []);
   const [scheduledHere, setScheduledHere] = useState<ScheduledMessageView[]>([]);
   const [showScheduledList, setShowScheduledList] = useState(false);
   // Lets the history loader (declared earlier) call jumpToMessage (declared later).
@@ -115,6 +126,36 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
       ? userId !== null && activeConv.adminIds.includes(userId)
       : !!activeConv?.members.some((m) => m.id === userId && m.role === "ADMIN"));
   const isReadOnly = (activeConv?.onlyAdminsCanPost || activeConv?.isAnnouncement) && !isConvAdmin;
+
+  // Announcement groups: who acknowledged which post ("n of m acknowledged").
+  const [acks, setAcks] = useState<{ counts: Record<number, number>; mine: Set<number>; audience: number } | null>(null);
+  const isAnnouncement = !!activeConv?.isAnnouncement;
+  useEffect(() => {
+    if (!isAnnouncement) return;
+    let alive = true;
+    let sub: { unsubscribe: () => void } | null = null;
+    apiGet<{ counts: Record<number, number>; mine: number[]; audience: number }>(`/api/messages/conversation/${conversationId}/acks`)
+      .then((a) => { if (alive) setAcks({ counts: a.counts, mine: new Set(a.mine), audience: a.audience }); })
+      .catch(() => {});
+    subscribe(`/topic/conversation.${conversationId}.ack`, (frame) => {
+      const ev = JSON.parse(frame.body) as { messageId: number; count: number; userId: number };
+      setAcks((a) => a && {
+        ...a,
+        counts: { ...a.counts, [ev.messageId]: ev.count },
+        mine: ev.userId === userId ? new Set(a.mine).add(ev.messageId) : a.mine,
+      });
+    }).then((s) => { if (alive) sub = s; else s.unsubscribe(); }).catch(() => {});
+    return () => { alive = false; sub?.unsubscribe(); };
+  }, [isAnnouncement, conversationId, userId]);
+
+  const acknowledge = async (messageId: number) => {
+    try {
+      const r = await apiPost<{ count: number }>(`/api/messages/${messageId}/ack`);
+      setAcks((a) => a && { ...a, counts: { ...a.counts, [messageId]: r.count }, mine: new Set(a.mine).add(messageId) });
+    } catch (err) {
+      showToast(apiErrorMessage(err) ?? "Couldn't acknowledge.");
+    }
+  };
   const isBlocked = !!(activeConv?.blockedByMe || activeConv?.blockedMe);
   const pinnedMessages = useMemo(() => messages.filter((m) => m.pinned), [messages]);
 
@@ -171,6 +212,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   // Load message history & mark conversation read
   useEffect(() => {
     if (!conversationId || isNaN(conversationId)) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset paging state before loading another chat
     setIsLoading(true);
     setHasMore(false);
     hasMoreRef.current = false;
@@ -308,7 +350,8 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
 
         subTyping = await subscribe(Topics.typing(conversationId), (frame) => {
           const ev: TypingEvent = JSON.parse(frame.body);
-          if (ev.userId !== userId) {
+          // Thread typing is shown in the thread panel, not the main chat.
+          if (ev.userId !== userId && !ev.threadRootId) {
             setTyping(conversationId, ev.userName, ev.typing);
           }
         });
@@ -401,9 +444,10 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
     const members = activeConv?.members ?? [];
     const list: { id: number | string; name: string; isSpecial?: boolean; sub?: string }[] = [];
 
-    if (activeConv?.type === "GROUP") {
-      list.push({ id: "all", name: "all", isSpecial: true, sub: "Notify everyone in this channel" });
-      list.push({ id: "here", name: "here", isSpecial: true, sub: "Notify active colleagues" });
+    if (activeConv?.type === "GROUP" && isConvAdmin) {
+      list.push({ id: "here", name: "here", isSpecial: true, sub: "Notify everyone in this group (admins only)" });
+      list.push({ id: "channel", name: "channel", isSpecial: true, sub: "Same as @here" });
+      list.push({ id: "all", name: "all", isSpecial: true, sub: "Same as @here" });
     }
 
     members.forEach((m) => {
@@ -413,7 +457,49 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
     });
 
     return list.filter((c) => c.name.toLowerCase().includes(mentionQuery));
-  }, [mentionQuery, activeConv, userId]);
+  }, [mentionQuery, activeConv, userId, isConvAdmin]);
+
+  // Quick replies: typing "/shortcut" at the start of the message offers saved replies.
+  const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
+  const [isQuickRepliesOpen, setIsQuickRepliesOpen] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    loadQuickReplies().then((list) => { if (alive) setQuickReplies(list); });
+    return () => { alive = false; };
+  }, []);
+  const slashMatch = /^\/([a-z0-9_-]*)$/i.exec(text);
+  const replyCandidates = useMemo(() => {
+    if (!slashMatch) return [];
+    const q = slashMatch[1].toLowerCase();
+    return quickReplies.filter((t) => t.shortcut.startsWith(q) || t.title.toLowerCase().includes(q)).slice(0, 8);
+  }, [slashMatch?.[1], quickReplies]); // eslint-disable-line react-hooks/exhaustive-deps
+  const replyIndex = Math.min(mentionIndex, Math.max(0, replyCandidates.length - 1));
+  const insertQuickReply = (t: QuickReply) => {
+    setText(t.content);
+    setTimeout(() => inputRef.current?.focus(), 10);
+  };
+
+  // ── Formatting: wrap the selection in **bold**, *italic*, ~strike~ or `code` (what messages render) ──
+  const [showFormatBar, setShowFormatBar] = useState(false);
+  const applyFormat = (marker: string) => {
+    const el = inputRef.current;
+    const start = el?.selectionStart ?? text.length;
+    const end = el?.selectionEnd ?? text.length;
+    const selected = text.slice(start, end);
+    setText(text.slice(0, start) + marker + selected + marker + text.slice(end));
+    // Keep the same words selected (or put the cursor between the markers).
+    setTimeout(() => {
+      el?.focus();
+      el?.setSelectionRange(start + marker.length, end + marker.length);
+    }, 0);
+  };
+  const FORMATS: { marker: string; label: string; keys: string; render: ReactNode }[] = [
+    { marker: "**", label: "Bold", keys: "Ctrl+B", render: <b>B</b> },
+    { marker: "*", label: "Italic", keys: "Ctrl+I", render: <i>I</i> },
+    { marker: "~", label: "Strikethrough", keys: "Ctrl+Shift+X", render: <s>S</s> },
+    { marker: "`", label: "Code", keys: "Ctrl+E", render: <code>{"<>"}</code> },
+  ];
+  const hasMarkup = /\*\*[^*]+\*\*|(^|\s)\*[^*\s][^*]*\*|~[^~]+~|`[^`]+`/.test(text);
 
   const insertMention = (name: string) => {
     const val = text;
@@ -432,9 +518,31 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   };
 
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.ctrlKey || e.metaKey) {
+      const k = e.key.toLowerCase();
+      const marker = k === "b" ? "**" : k === "i" ? "*" : k === "e" ? "`" : k === "x" && e.shiftKey ? "~" : null;
+      if (marker) {
+        e.preventDefault();
+        applyFormat(marker);
+        return;
+      }
+    }
     if (e.key === "ArrowUp" && mentionCandidates.length === 0 && !text && editLastOwnMessage()) {
       e.preventDefault();
       return;
+    }
+    if (replyCandidates.length > 0) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const step = e.key === "ArrowDown" ? 1 : -1;
+        setMentionIndex((replyIndex + step + replyCandidates.length) % replyCandidates.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        insertQuickReply(replyCandidates[replyIndex]);
+        return;
+      }
     }
     if (mentionCandidates.length > 0) {
       if (e.key === "ArrowDown") {
@@ -461,7 +569,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   };
 
   const notifyTyping = useCallback((isTyping: boolean) => {
-    publish(Destinations.typing(conversationId), {
+    publish(Destinations.typing(), {
       conversationId,
       userId: userId ?? 0,
       userName: userName ?? "User",
@@ -479,6 +587,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
       notifyTyping(false);
     }, 2500);
 
+    if (/^\/[\w-]*$/.test(val)) setMentionIndex(0);
     const textBeforeCursor = val.slice(0, cursorPos);
     const atMatch = textBeforeCursor.match(/@([a-zA-Z0-9_\-\.]*)$/);
     if (atMatch) {
@@ -503,6 +612,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   // Handle Send Message — each file becomes its own message; the text rides on the first one.
   const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    const typed = text; // restored if the sender cancels a sensitive-data warning
     let trimmed = text.trim();
     if ((!trimmed && selectedFiles.length === 0) || isUploading) return;
 
@@ -546,10 +656,11 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
 
     for (const payload of payloads) {
       try {
-        const sent = await apiPost<MessageResponse>(`/api/conversations/${conversationId}/messages`, payload);
+        const sent = await postMessage<MessageResponse>(`/api/conversations/${conversationId}/messages`, payload);
+        if (!sent) { setText(typed); return; }
         addMessage(sent);
       } catch (err) {
-        console.error("Failed to send message:", err);
+        showToast(apiErrorMessage(err) ?? "Message not sent.");
       }
     }
   };
@@ -710,7 +821,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                 <Users size={20} />
               </div>
             ) : (
-              <Avatar name={title} src={otherMember?.profilePicUrl} size={40} online={isOnline} />
+              <Avatar userId={activeConv?.type === "DIRECT" ? otherMember?.id : null} name={title} src={otherMember?.profilePicUrl} size={40} online={isOnline} />
             )}
 
             <div className="cw-header-info">
@@ -742,6 +853,12 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
             >
               <Search size={18} />
             </button>
+
+            {canSummarize && (
+              <button className="cw-action-btn" title="Summarize this chat" aria-label="Summarize this chat" onClick={() => setIsSummaryOpen(true)}>
+                <Sparkles size={18} />
+              </button>
+            )}
 
             {activeConv?.type === "GROUP" && !isReadOnly && (
               <>
@@ -877,8 +994,8 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                 <div key={i} className={`cw-skeleton-row ${i % 2 === 0 ? "cw-skeleton-row--left" : "cw-skeleton-row--right"}`}>
                   {i % 2 === 0 && <div className="skeleton skeleton-circle" style={{ width: 32, height: 32, flexShrink: 0 }} />}
                   <div className="cw-skeleton-bubble">
-                    <div className="skeleton skeleton-text--lg" style={{ width: `${60 + Math.random() * 40}%` }} />
-                    <div className="skeleton skeleton-text" style={{ width: `${40 + Math.random() * 30}%` }} />
+                    <div className="skeleton skeleton-text--lg" style={{ width: `${60 + ((i * 37) % 40)}%` }} />
+                    <div className="skeleton skeleton-text" style={{ width: `${40 + ((i * 23) % 30)}%` }} />
                   </div>
                 </div>
               ))}
@@ -917,6 +1034,13 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                       isMine={msg.senderId === userId}
                       onReply={(m) => setReplyMessage(m)}
                       onOpenThread={(m) => { setIsDrawerOpen(false); setThreadRootId(m.id); }}
+                      ack={acks && !msg.deleted ? {
+                        count: acks.counts[msg.id] ?? 0,
+                        audience: acks.audience,
+                        mine: acks.mine.has(msg.id),
+                        canViewList: msg.senderId === userId || isConvAdmin,
+                        onAck: () => acknowledge(msg.id),
+                      } : undefined}
                     />
                   </div>
                 ))}
@@ -968,7 +1092,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                   <li key={s.id}>
                     <div>
                       <span className="cw-scheduled-when">{formatWhen(s.sendAt)}</span>
-                      <span className="cw-scheduled-text">{s.content}</span>
+                      <span className="cw-scheduled-text">{s.attachmentName ? `📎 ${s.attachmentName}${s.content ? ` · ${s.content}` : ""}` : s.content}</span>
                     </div>
                     <button
                       type="button"
@@ -1084,11 +1208,11 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                       <button
                         type="button"
                         role="menuitem"
-                        disabled={!text.trim() || selectedFiles.length > 0}
+                        disabled={!hasDraftToSend}
                         onClick={() => { setIsComposerMenuOpen(false); setIsScheduleOpen(true); }}
                       >
                         <span className="cw-more-icon cw-more-icon--later"><Clock size={18} /></span>
-                        {text.trim() ? "Send later" : "Send later (type a message first)"}
+                        {hasDraftToSend ? "Send later" : "Send later (type a message first)"}
                       </button>
                     </div>
                   </>
@@ -1115,6 +1239,35 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
 
               <div className="cw-input-wrapper">
                 {/* Mention Popover */}
+                {slashMatch && (
+                  <div className="cw-mention-popover" role="listbox" aria-label="Quick replies">
+                    <div className="cw-mention-header">Quick replies</div>
+                    {replyCandidates.length === 0 && (
+                      <div className="cw-mention-sub" style={{ padding: "0.5rem 0.75rem" }}>
+                        {quickReplies.length === 0 ? "No quick replies yet." : "No match."}
+                      </div>
+                    )}
+                    {replyCandidates.map((t, i) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        role="option"
+                        aria-selected={i === replyIndex}
+                        className={`cw-mention-item ${i === replyIndex ? "cw-mention-item--active" : ""}`}
+                        onMouseDown={(e) => { e.preventDefault(); insertQuickReply(t); }}
+                      >
+                        <div className="cw-mention-left">
+                          <span className="cw-mention-name cw-mention-name--special">/{t.shortcut}</span>
+                        </div>
+                        <span className="cw-mention-sub">{t.title !== t.shortcut ? t.title : t.content.slice(0, 40)}</span>
+                      </button>
+                    ))}
+                    <button type="button" className="cw-mention-item" onMouseDown={(e) => { e.preventDefault(); setIsQuickRepliesOpen(true); }}>
+                      <span className="cw-mention-sub">⚡ Manage quick replies…</span>
+                    </button>
+                  </div>
+                )}
+
                 {mentionCandidates.length > 0 && (
                   <div className="cw-mention-popover">
                     <div className="cw-mention-header">Mentions</div>
@@ -1132,7 +1285,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                           {c.isSpecial ? (
                             <span style={{ fontSize: "1.1rem" }}>{c.name === "all" ? "📢" : "👋"}</span>
                           ) : (
-                            <Avatar name={c.name} size={24} />
+                            <Avatar userId={typeof c.id === "number" ? c.id : null} name={c.name} size={24} />
                           )}
                           <span className={`cw-mention-name ${c.isSpecial ? "cw-mention-name--special" : ""}`}>
                             @{c.name}
@@ -1143,6 +1296,39 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                     ))}
                   </div>
                 )}
+
+                {(showFormatBar || hasMarkup) && !slashMatch && mentionCandidates.length === 0 && (
+                  <div className="cw-format-pop">
+                    {showFormatBar && (
+                      <div className="cw-format-bar" role="toolbar" aria-label="Text formatting">
+                        {FORMATS.map((f) => (
+                          <button key={f.label} type="button" title={`${f.label} (${f.keys})`} aria-label={f.label}
+                            onMouseDown={(e) => { e.preventDefault(); applyFormat(f.marker); }}>
+                            {f.render}
+                          </button>
+                        ))}
+                        <span className="cw-format-hint">Select text, then pick a style</span>
+                      </div>
+                    )}
+                    {hasMarkup && (
+                      <div className="cw-format-preview" aria-live="polite">
+                        <span className="cw-format-preview-label">Preview</span>
+                        <RichTextRenderer content={text} isMine={false} currentUserName={userName ?? undefined} />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  className={`cw-input-btn cw-desktop-only cw-format-toggle ${showFormatBar ? "cw-format-toggle--on" : ""}`}
+                  onClick={() => { setShowFormatBar((v) => !v); inputRef.current?.focus(); }}
+                  title="Formatting (bold, italic, strikethrough, code)"
+                  aria-label="Formatting"
+                  aria-pressed={showFormatBar}
+                >
+                  Aa
+                </button>
 
                 <input
                   ref={inputRef}
@@ -1190,8 +1376,8 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
                 type="button"
                 className="cw-input-btn cw-desktop-only"
                 onClick={() => setIsScheduleOpen(true)}
-                disabled={!text.trim() || selectedFiles.length > 0}
-                title={selectedFiles.length > 0 ? "Files can't be scheduled yet" : "Send later"}
+                disabled={!hasDraftToSend}
+                title="Send later"
               >
                 <Clock size={19} />
               </button>
@@ -1209,14 +1395,24 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
         </div>
       </div>
 
+      {isQuickRepliesOpen && (
+        <QuickRepliesModal onClose={() => setIsQuickRepliesOpen(false)} onChanged={setQuickReplies} />
+      )}
+
+      {isSummaryOpen && (
+        <SummaryModal conversationId={conversationId} title={title} onClose={() => setIsSummaryOpen(false)} />
+      )}
+
       {isScheduleOpen && (
         <ScheduleMessageModal
           conversationId={conversationId}
           initialText={text}
+          initialFiles={selectedFiles}
           onClose={() => setIsScheduleOpen(false)}
           onScheduled={(s) => {
             setScheduledHere((list) => [...list, s].sort((a, b) => a.sendAt.localeCompare(b.sendAt)));
             setText("");
+            setSelectedFiles([]);
             setReplyMessage(null);
             showToast(`Scheduled for ${formatWhen(s.sendAt)}`);
           }}
@@ -1472,6 +1668,23 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
         .cw-input-btn { color: var(--text-muted); padding: 0.5rem; border-radius: 8px; background: none; border: none; cursor: pointer; display: flex; }
         .cw-input-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
         .cw-input-wrapper { flex: 1; display: flex; align-items: center; position: relative; }
+        .cw-format-pop {
+          position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; z-index: 50;
+          background: var(--surface-card, #fff); border: 1px solid var(--border); border-radius: 12px;
+          box-shadow: var(--shadow-lg, 0 10px 25px rgba(0,0,0,0.15)); overflow: hidden;
+        }
+        .cw-format-bar { display: flex; align-items: center; gap: 2px; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+        .cw-format-bar:last-child { border-bottom: none; }
+        .cw-format-bar button {
+          min-width: 30px; height: 28px; border: none; border-radius: 6px; background: none;
+          color: var(--text-primary); font-size: 0.85rem; cursor: pointer;
+        }
+        .cw-format-bar button:hover { background: var(--bg-tertiary); }
+        .cw-format-hint { margin-left: auto; font-size: 0.7rem; color: var(--text-muted); padding-right: 4px; }
+        .cw-format-preview { padding: 0.45rem 0.75rem; font-size: 0.875rem; color: var(--text-primary); max-height: 120px; overflow-y: auto; }
+        .cw-format-preview-label { display: block; font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 2px; }
+        .cw-format-toggle { font-weight: 700; font-size: 0.85rem; font-family: Georgia, serif; }
+        .cw-format-toggle--on { color: var(--accent); background: var(--accent-soft); }
         .cw-mention-popover {
           position: absolute; bottom: calc(100% + 8px); left: 0; right: 0;
           background: var(--surface-card, #ffffff);

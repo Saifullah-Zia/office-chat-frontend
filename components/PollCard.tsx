@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { PollResponse } from "@/types";
-import { apiPost } from "@/lib/api";
-import { Check, Vote, Users } from "lucide-react";
+import { apiErrorMessage, apiPost } from "@/lib/api";
+import { showToast } from "@/lib/toast";
+import { Check, Vote, Users, Lock } from "lucide-react";
 
 interface PollCardProps {
   poll: PollResponse;
@@ -19,11 +20,25 @@ export default function PollCard({ poll, isMine }: PollCardProps) {
     try {
       await apiPost(`/api/polls/${poll.id}/vote/${optionId}`);
     } catch (err) {
-      console.error("Failed to vote:", err);
+      showToast(apiErrorMessage(err) ?? "Couldn't record your vote.");
     } finally {
       setIsVoting(false);
     }
   };
+
+  const handleClose = async () => {
+    if (!confirm("End this poll? No one will be able to vote after this.")) return;
+    try {
+      await apiPost(`/api/polls/${poll.id}/close`);
+    } catch (err) {
+      showToast(apiErrorMessage(err) ?? "Couldn't close the poll.");
+    }
+  };
+
+  const closed = !!poll.closed;
+  const deadline = poll.closesAt
+    ? new Date(poll.closesAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : null;
 
   const totalVotes = poll.totalVotes > 0 ? poll.totalVotes : 1;
 
@@ -37,7 +52,9 @@ export default function PollCard({ poll, isMine }: PollCardProps) {
         <div className="poll-title-box">
           <h4 className="poll-question">{poll.question}</h4>
           <span className="poll-sub font-mono">
-            {poll.multipleAnswers ? "Select one or more" : "Select one option"}
+            {closed
+              ? "Poll closed · final results"
+              : `${poll.multipleAnswers ? "Select one or more" : "Select one option"}${deadline ? ` · ends ${deadline}` : ""}`}
           </span>
         </div>
       </div>
@@ -53,7 +70,8 @@ export default function PollCard({ poll, isMine }: PollCardProps) {
               type="button"
               className={`poll-option-btn ${opt.votedByMe ? "poll-option-btn--voted" : ""}`}
               onClick={() => handleVote(opt.id)}
-              disabled={isVoting}
+              disabled={isVoting || closed}
+              aria-pressed={opt.votedByMe}
             >
               {/* Progress bar background fill */}
               <div
@@ -78,13 +96,20 @@ export default function PollCard({ poll, isMine }: PollCardProps) {
         <span className="poll-total-votes">
           {poll.totalVotes} {poll.totalVotes === 1 ? "vote" : "votes"}
         </span>
-        <button
+<span className="poll-footer-actions">
+                <button
           type="button"
           className="poll-voters-btn"
           onClick={() => setShowVoters(!showVoters)}
         >
           <Users size={12} /> {showVoters ? "Hide votes" : "View votes"}
         </button>
+        {isMine && !closed && (
+          <button type="button" className="poll-voters-btn" onClick={handleClose}>
+            <Lock size={12} /> End poll
+          </button>
+        )}
+        </span>
       </div>
 
       {/* Expanded Voter Names Details */}
@@ -137,6 +162,9 @@ export default function PollCard({ poll, isMine }: PollCardProps) {
           text-align: left; transition: border-color 0.15s;
         }
         .poll-option-btn:hover { border-color: var(--accent); }
+        .poll-option-btn:disabled { cursor: default; }
+        .poll-option-btn:disabled:hover { border-color: var(--border); }
+        .poll-footer-actions { display: flex; gap: 0.75rem; }
         .poll-option-btn--voted { border-color: var(--accent); background: var(--accent-soft); }
 
         .poll-progress-bar {

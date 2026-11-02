@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Copy, Check, ExternalLink } from "lucide-react";
+import { Copy, Check } from "lucide-react";
 
 interface RichTextRendererProps {
   content: string;
@@ -16,7 +16,7 @@ interface RichTextRendererProps {
  * - Bold: **text** or *text*
  * - Strikethrough: ~text~
  * - URLs: https://...
- * - Mentions: @name, @all, @here
+ * - Mentions: @name, @all, @here, @channel
  */
 export default function RichTextRenderer({ content, isMine, currentUserName }: RichTextRendererProps) {
   if (!content) return null;
@@ -203,7 +203,7 @@ function formatInlineText(text: string, currentUserName?: string | null, isMine?
     } else if (token.startsWith("@")) {
       const mentionName = token.slice(1).toLowerCase();
       const isMe = currentUserName && currentUserName.toLowerCase().includes(mentionName);
-      const isBroad = mentionName === "all" || mentionName === "here" || mentionName === "everyone";
+      const isBroad = ["all", "here", "channel", "everyone"].includes(mentionName);
       const highlight = isMe || isBroad;
 
       elements.push(

@@ -17,6 +17,7 @@ function when(iso?: string | null) {
 export default function AdminReports({ onCountChange }: AdminReportsProps) {
   const [status, setStatus] = useState<ReportStatus | "ALL">("OPEN");
   const [reports, setReports] = useState<ReportView[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [notes, setNotes] = useState<Record<number, string>>({});
 
@@ -33,8 +34,8 @@ export default function AdminReports({ onCountChange }: AdminReportsProps) {
   useEffect(() => {
     let cancelled = false;
     apiGet<ReportView[]>("/api/admin/reports", { status })
-      .then((r) => { if (!cancelled) setReports(r); })
-      .catch(() => { if (!cancelled) setReports([]); });
+      .then((r) => { if (!cancelled) { setReports(r); setLoadFailed(false); } })
+      .catch(() => { if (!cancelled) { setReports([]); setLoadFailed(true); } });
     return () => { cancelled = true; };
   }, [status]);
 
@@ -88,6 +89,8 @@ export default function AdminReports({ onCountChange }: AdminReportsProps) {
       <div className="arp-list">
         {reports === null ? (
           <p className="arp-empty"><Loader2 size={14} className="spin" /> Loading reports…</p>
+        ) : loadFailed ? (
+          <p className="arp-empty" role="alert">Reports couldn&apos;t be loaded. Check that the backend is running.</p>
         ) : reports.length === 0 ? (
           <div className="arp-empty-state">
             <Flag size={30} />

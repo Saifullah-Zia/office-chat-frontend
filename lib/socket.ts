@@ -6,82 +6,84 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:8080/ws";
 
 let stompClient: Client | null = null;
 
-export function getStompClient(): Client {
-  const token = getToken() ?? "";
+/**
+ * Every live subscription, so they can be restored after a reconnect. stompjs reconnects on its own
+ * (server restart, network blip) but does NOT re-subscribe, which left open tabs silently deaf.
+ */
+interface Registered {
+  destination: string;
+  callback: (message: IMessage) => void;
+  sub: StompSubscription | null;
+}
+const registry = new Set<Registered>();
+let waiters: { resolve: (c: Client) => void; reject: (e: Error) => void }[] = [];
 
+export function getStompClient(): Client {
   if (!stompClient) {
-    stompClient = new Client({
+    const client = new Client({
       webSocketFactory: () => new SockJS(WS_URL) as WebSocket,
+      // Fresh token on every (re)connect.
       beforeConnect: () => {
-        const t = getToken() ?? "";
-        if (stompClient) {
-          stompClient.connectHeaders = {
-            Authorization: `Bearer ${t}`,
-          };
-        }
-      },
-      connectHeaders: {
-        Authorization: `Bearer ${token}`,
+        client.connectHeaders = { Authorization: `Bearer ${getToken() ?? ""}` };
       },
       reconnectDelay: 5_000,
+      onConnect: () => {
+        for (const entry of registry) {
+          entry.sub = client.subscribe(entry.destination, entry.callback);
+        }
+        waiters.forEach((w) => w.resolve(client));
+        waiters = [];
+      },
       onStompError: (frame) => {
         console.error("[STOMP] Error:", frame.headers["message"]);
+        const err = new Error(frame.headers["message"] ?? "STOMP error");
+        waiters.forEach((w) => w.reject(err));
+        waiters = [];
       },
     });
-  } else {
-    stompClient.connectHeaders = {
-      Authorization: `Bearer ${token}`,
-    };
+    stompClient = client;
   }
   return stompClient;
 }
 
-let connectPromise: Promise<Client> | null = null;
-
 export function connectStomp(): Promise<Client> {
   const client = getStompClient();
-
   if (client.connected) return Promise.resolve(client);
-  if (connectPromise) return connectPromise;
-
-  connectPromise = new Promise<Client>((resolve, reject) => {
-    const prevOnConnect = client.onConnect;
-    const prevOnStompError = client.onStompError;
-
-    client.onConnect = (frame) => {
-      connectPromise = null;
-      if (prevOnConnect) prevOnConnect(frame);
-      resolve(client);
-    };
-
-    client.onStompError = (frame) => {
-      connectPromise = null;
-      if (prevOnStompError) prevOnStompError(frame);
-      reject(new Error(frame.headers["message"] ?? "STOMP error"));
-    };
-
-    client.activate();
+  return new Promise<Client>((resolve, reject) => {
+    waiters.push({ resolve, reject });
+    if (!client.active) client.activate();
   });
-
-  return connectPromise;
 }
 
 export function disconnectStomp(): Promise<void> {
+  registry.clear();
+  waiters.forEach((w) => w.reject(new Error("Disconnected")));
+  waiters = [];
   if (stompClient) {
     const client = stompClient;
     stompClient = null;
-    connectPromise = null;
     return client.deactivate();
   }
   return Promise.resolve();
 }
 
+/** Subscribe; the subscription survives reconnects until unsubscribe() is called. */
 export async function subscribe(
   destination: string,
   callback: (message: IMessage) => void,
-): Promise<StompSubscription> {
+): Promise<{ unsubscribe: () => void }> {
   const client = await connectStomp();
-  return client.subscribe(destination, callback);
+  const entry: Registered = { destination, callback, sub: client.subscribe(destination, callback) };
+  registry.add(entry);
+  return {
+    unsubscribe: () => {
+      registry.delete(entry);
+      if (stompClient?.connected) {
+        try { entry.sub?.unsubscribe(); } catch {}
+      }
+      entry.sub = null;
+    },
+  };
 }
 
 export async function publish(
@@ -97,9 +99,11 @@ export const Topics = {
   typing: (convId: number) => `/topic/conversation.${convId}.typing`,
   presence: () => `/topic/presence`,
   userStatus: () => `/topic/user.status`,
-  userQueue: (userId: number) => `/queue/user.${userId}`,
+  /** My private call signals (ring/answer/hang-up), delivered by the server relay. */
+  callQueue: () => `/user/queue/call`,
 };
 
 export const Destinations = {
-  typing: (convId: number) => `/app/chat.typing`,
+  typing: () => `/app/chat.typing`,
+  callSignal: () => `/app/call.signal`,
 };

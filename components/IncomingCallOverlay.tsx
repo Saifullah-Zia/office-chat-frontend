@@ -31,9 +31,9 @@ export default function IncomingCallOverlay({
 
   return (
     <div className="ico-backdrop">
-      <div className="ico-card">
+      <div className="ico-card" role="alertdialog" aria-live="assertive" aria-label={`Incoming call from ${signal.fromUserName}`}>
         <div className="ico-pulse-ring">
-          <Avatar name={signal.fromUserName} size={72} />
+          <Avatar userId={signal.fromUserId} name={signal.fromUserName} size={72} />
         </div>
 
         <h3 className="ico-caller">{signal.fromUserName}</h3>

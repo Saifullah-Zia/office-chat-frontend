@@ -47,6 +47,8 @@ export default function VoiceRecorder({
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  // The recording timer is set up before the stop handler is declared, so it calls it through this ref.
+  const stopAndSendRef = useRef<() => void>(() => {});
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number>(0);
@@ -65,7 +67,7 @@ export default function VoiceRecorder({
   };
 
   // Animate live waveform from AnalyserNode
-  const animateBars = useCallback(() => {
+  const animateBars = useCallback(function tick() {
     const analyser = analyserRef.current;
     if (!analyser) return;
 
@@ -84,7 +86,7 @@ export default function VoiceRecorder({
       bars.push(0.1 + avg * 0.9);
     }
     setLiveBars(bars);
-    animFrameRef.current = requestAnimationFrame(animateBars);
+    animFrameRef.current = requestAnimationFrame(tick);
   }, []);
 
   useEffect(() => {
@@ -215,7 +217,7 @@ export default function VoiceRecorder({
           const elapsed = Math.floor((Date.now() - startTime) / 1000);
           setSeconds(elapsed);
           if (elapsed >= MAX_DURATION_SECS) {
-            handleStopAndSendInternal();
+            stopAndSendRef.current();
           }
         }, 250);
 
@@ -290,6 +292,10 @@ export default function VoiceRecorder({
     }
     mediaRecorderRef.current.stop();
   };
+
+  useEffect(() => {
+    stopAndSendRef.current = () => void handleStopAndSendInternal();
+  });
 
   const handleStopAndSend = async () => {
     await handleStopAndSendInternal();

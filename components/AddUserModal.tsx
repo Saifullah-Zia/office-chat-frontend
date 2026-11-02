@@ -1,5 +1,6 @@
 "use client";
 
+import { useEscapeKey } from "@/hooks/useEscapeKey";
 import { useState } from "react";
 import { X, UserPlus, Loader2 } from "lucide-react";
 import { apiPost } from "@/lib/api";
@@ -21,6 +22,8 @@ export default function AddUserModal({ isOpen, onClose, onUserAdded }: AddUserMo
   });
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  useEscapeKey(onClose, isOpen);
 
   if (!isOpen) return null;
 
@@ -77,14 +80,14 @@ export default function AddUserModal({ isOpen, onClose, onUserAdded }: AddUserMo
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="aum-title" onClick={(e) => e.stopPropagation()}>
         <header className="modal-header">
           <div className="modal-title-group">
             <div className="modal-icon">
               <UserPlus size={20} />
             </div>
             <div>
-              <h2 className="modal-title">Add New Employee</h2>
+              <h2 className="modal-title" id="aum-title">Add New Employee</h2>
               <p className="modal-sub">Create an account for a new team member</p>
             </div>
           </div>
@@ -143,6 +146,7 @@ export default function AddUserModal({ isOpen, onClose, onUserAdded }: AddUserMo
                 className="modal-input"
               >
                 <option value="EMPLOYEE">Employee</option>
+                <option value="PROVIDER">Provider (doctor)</option>
                 <option value="ADMIN">Admin</option>
               </select>
             </div>
@@ -175,7 +179,7 @@ export default function AddUserModal({ isOpen, onClose, onUserAdded }: AddUserMo
 
       <style>{`
         .modal-backdrop {
-          position: fixed; inset: 0; z-index: 999;
+          position: fixed; inset: 0; z-index: 1100;
           background: rgba(17, 24, 39, 0.6);
           backdrop-filter: blur(4px);
           display: flex; align-items: center; justify-content: center;

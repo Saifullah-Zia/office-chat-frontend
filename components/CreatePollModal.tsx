@@ -1,8 +1,9 @@
 "use client";
 
+import { useEscapeKey } from "@/hooks/useEscapeKey";
 import { useState } from "react";
 import { X, Plus, Trash2, Vote, Loader2 } from "lucide-react";
-import { apiPost } from "@/lib/api";
+import { apiErrorMessage, apiPost } from "@/lib/api";
 import { MessageResponse } from "@/types";
 
 interface CreatePollModalProps {
@@ -21,7 +22,10 @@ export default function CreatePollModal({
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState<string[]>(["", ""]);
   const [multipleAnswers, setMultipleAnswers] = useState(false);
+  const [durationHours, setDurationHours] = useState(0); // 0 = no deadline
   const [isLoading, setIsLoading] = useState(false);
+
+  useEscapeKey(onClose, isOpen);
 
   if (!isOpen) return null;
 
@@ -61,15 +65,17 @@ export default function CreatePollModal({
         question: question.trim(),
         multipleAnswers,
         options: validOptions,
+        closesAt: durationHours > 0 ? new Date(Date.now() + durationHours * 3_600_000).toISOString() : null,
       });
       onPollCreated(msg);
       onClose();
       setQuestion("");
       setOptions(["", ""]);
       setMultipleAnswers(false);
+      setDurationHours(0);
     } catch (err) {
       console.error("Failed to create poll:", err);
-      alert("Failed to create poll.");
+      alert(apiErrorMessage(err) ?? "Failed to create poll.");
     } finally {
       setIsLoading(false);
     }
@@ -77,13 +83,13 @@ export default function CreatePollModal({
 
   return (
     <div className="cpm-overlay" onClick={onClose}>
-      <div className="cpm-card" onClick={(e) => e.stopPropagation()}>
+      <div className="cpm-card" role="dialog" aria-modal="true" aria-labelledby="cpm-title" onClick={(e) => e.stopPropagation()}>
         <div className="cpm-header">
           <div className="cpm-title-row">
             <Vote size={20} className="cpm-icon" />
-            <h3>Create a Poll</h3>
+            <h3 id="cpm-title">Create a Poll</h3>
           </div>
-          <button type="button" className="cpm-close" onClick={onClose}>
+          <button type="button" className="cpm-close" onClick={onClose} aria-label="Close">
             <X size={18} />
           </button>
         </div>
@@ -147,6 +153,22 @@ export default function CreatePollModal({
             />
           </div>
 
+          <div className="cpm-toggle-row">
+            <label htmlFor="poll-deadline">Voting closes</label>
+            <select
+              id="poll-deadline"
+              className="cpm-select"
+              value={durationHours}
+              onChange={(e) => setDurationHours(Number(e.target.value))}
+            >
+              <option value={0}>Never (close by hand)</option>
+              <option value={1}>In 1 hour</option>
+              <option value={24}>In 1 day</option>
+              <option value={72}>In 3 days</option>
+              <option value={168}>In 1 week</option>
+            </select>
+          </div>
+
           <div className="cpm-footer">
             <button type="button" className="cpm-cancel" onClick={onClose}>
               Cancel
@@ -202,6 +224,10 @@ export default function CreatePollModal({
           margin-top: 0.25rem;
         }
 
+        .cpm-select {
+          padding: 0.35rem 0.5rem; border-radius: 8px; border: 1px solid var(--border);
+          background: var(--bg-secondary); color: var(--text-primary); font-size: 0.8125rem;
+        }
         .cpm-toggle-row {
           display: flex; align-items: center; justify-content: space-between;
           font-size: 0.84375rem; font-weight: 500; color: var(--text-secondary);

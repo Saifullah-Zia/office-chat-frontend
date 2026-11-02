@@ -22,6 +22,7 @@ export default function RegisterPage() {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mark client mount for hydration-safe rendering
     setMounted(true);
     if (isAuthenticated()) {
       router.replace("/");

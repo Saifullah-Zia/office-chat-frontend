@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ShieldCheck, ShieldOff, Laptop, Smartphone, Loader2, Copy, Check } from "lucide-react";
+import { ShieldCheck, ShieldOff, Laptop, Smartphone, Loader2, Copy, Check, Download } from "lucide-react";
 import QRCode from "qrcode";
 import { apiGet, apiPost, apiDelete, apiErrorMessage } from "@/lib/api";
 
@@ -105,6 +105,26 @@ export default function SecuritySettings() {
     await load();
   });
 
+  const [exporting, setExporting] = useState(false);
+  const downloadMyData = async () => {
+    setExporting(true);
+    try {
+      const data = await apiGet<unknown>("/api/account/export");
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "my-office-chat-data.json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      setError(apiErrorMessage(err) ?? "Couldn't export your data.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const copyCodes = () => {
     if (!recoveryCodes) return;
     navigator.clipboard.writeText(recoveryCodes.join("\n")).catch(() => {});
@@ -204,6 +224,17 @@ export default function SecuritySettings() {
             );
           })
         )}
+      </div>
+
+      {/* ── Your data ── */}
+      <div className="sec-block">
+        <div className="sec-row">
+          <span className="sec-title">Your data</span>
+          <button type="button" className="sec-link" disabled={exporting} onClick={downloadMyData}>
+            {exporting ? <Loader2 size={13} className="spin" /> : <Download size={13} />} Download my data
+          </button>
+        </div>
+        <p className="sec-note">A JSON file with your profile, the chats you&apos;re in and every message you&apos;ve sent.</p>
       </div>
 
       <style>{`

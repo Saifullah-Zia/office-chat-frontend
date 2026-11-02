@@ -9,15 +9,15 @@ import type {
   ILocalVideoTrack,
 } from "agora-rtc-sdk-ng";
 import { apiGet, apiPost } from "@/lib/api";
-import { subscribe, publish, Topics } from "@/lib/socket";
+import { subscribe, publish, Topics, Destinations } from "@/lib/socket";
 import { ActiveCall, CallParticipant, CallSignal, CallType } from "@/types/call";
 import { useStore } from "@/lib/store";
 
 // Safely load AgoraRTC dynamic import on client-side only (prevents SSR 500 error in Next.js)
 async function getAgoraRTC() {
   if (typeof window === "undefined") return null;
-  const module = await import("agora-rtc-sdk-ng");
-  const AgoraRTC = module.default;
+  const agora = await import("agora-rtc-sdk-ng");
+  const AgoraRTC = agora.default;
   AgoraRTC.setLogLevel(3); // suppress noisy debug logs
   return AgoraRTC;
 }
@@ -132,7 +132,8 @@ export function useCallManager(myUserId: number | null) {
 
   const sendSignal = useCallback((toUserId: number, signal: Omit<CallSignal, "fromUserId" | "fromUserName" | "toUserId">) => {
     if (!myUserId) return Promise.resolve();
-    return publish(Topics.userQueue(toUserId), {
+    // Relayed by the server, which checks membership and stamps the real sender.
+    return publish(Destinations.callSignal(), {
       ...signal,
       fromUserId: myUserId,
       fromUserName: myUserName ?? "User",
@@ -271,15 +272,27 @@ export function useCallManager(myUserId: number | null) {
     const AgoraRTC = await getAgoraRTC();
     if (!AgoraRTC || !myUserId) throw new Error("Agora unavailable");
 
-    const { appId, token } = await apiGet<AgoraTokenResponse>(
-      `/api/agora/token?channelName=${encodeURIComponent(channelName)}&uid=${myUserId}`
-    );
+    // The server only issues tokens for chats I'm in, always for my own user id.
+    const tokenUrl = `/api/agora/token?channelName=${encodeURIComponent(channelName)}`;
+    const { appId, token } = await apiGet<AgoraTokenResponse>(tokenUrl);
     const effectiveAppId = appId || process.env.NEXT_PUBLIC_AGORA_APP_ID || "";
     if (!effectiveAppId) throw new Error("Agora App ID is missing. Please configure NEXT_PUBLIC_AGORA_APP_ID.");
 
     const client = await setupAgoraClient();
     if (!client) throw new Error("Agora unavailable");
     await client.join(effectiveAppId, channelName, token || null, myUserId);
+
+    // Tokens are short-lived (2h): fetch a fresh one shortly before expiry so long calls never drop.
+    const renewToken = async () => {
+      try {
+        const fresh = await apiGet<AgoraTokenResponse>(tokenUrl);
+        await client.renewToken(fresh.token);
+      } catch (err) {
+        console.warn("Couldn't renew the call token:", err);
+      }
+    };
+    client.on("token-privilege-will-expire", renewToken);
+    client.on("token-privilege-did-expire", renewToken);
 
     // Audio with native noise suppression / echo cancellation
     const audioTrack = await AgoraRTC.createMicrophoneAudioTrack({
@@ -309,7 +322,7 @@ export function useCallManager(myUserId: number | null) {
 
     (async () => {
       try {
-        sub = await subscribe(Topics.userQueue(myUserId), async (frame) => {
+        sub = await subscribe(Topics.callQueue(), async (frame) => {
           const signal: CallSignal = JSON.parse(frame.body);
           if (signal.fromUserId === myUserId) return;
 
@@ -444,7 +457,8 @@ export function useCallManager(myUserId: number | null) {
     stopRingtone();
     clearRingTimeout();
 
-    const channelName = signal.sdp || `call_conv_${signal.conversationId}`;
+    // Derived from the chat, never taken from the signal (the server only issues tokens for this channel anyway).
+    const channelName = `call_conv_${signal.conversationId}`;
 
     try {
       const call: ActiveCall = {

@@ -1,4 +1,5 @@
-export type Role = "ADMIN" | "EMPLOYEE";
+/** PROVIDER = external doctor/provider (client): chats only with company staff. */
+export type Role = "ADMIN" | "EMPLOYEE" | "PROVIDER";
 
 export interface AuthResponse {
   token: string;
@@ -35,6 +36,11 @@ export interface UserResponse {
   workStatus?: string;
   createdAt?: string;
   lastSeenAt?: string | null;
+  jobTitle?: string | null;
+  /** Who they report to (org chart) */
+  managerId?: number | null;
+  /** Email withheld from this viewer (providers' emails are admin-only); email is "" then */
+  emailHidden?: boolean;
 }
 
 export type ConversationType = "DIRECT" | "GROUP";
@@ -49,6 +55,9 @@ export interface MemberResponse {
   profilePicUrl?: string;
   workStatus?: string;
   lastSeenAt?: string | null;
+  jobTitle?: string | null;
+  managerId?: number | null;
+  emailHidden?: boolean;
 }
 
 export interface ConversationResponse {
@@ -98,6 +107,10 @@ export interface PollResponse {
   multipleAnswers: boolean;
   totalVotes: number;
   options: PollOptionResponse[];
+  /** Voting deadline, if any */
+  closesAt?: string | null;
+  /** Past the deadline or closed by hand */
+  closed?: boolean;
 }
 
 export interface AttachmentResponse {
@@ -158,6 +171,8 @@ export interface TypingRequest {
   userId: number;
   userName: string;
   typing: boolean;
+  /** Set when typing in a thread reply box */
+  threadRootId?: number | null;
 }
 
 export interface TypingEvent {
@@ -165,6 +180,7 @@ export interface TypingEvent {
   userId: number;
   userName: string;
   typing: boolean;
+  threadRootId?: number | null;
 }
 
 export interface PresenceEvent {
@@ -243,6 +259,8 @@ export interface ScheduledMessageView {
   content: string;
   sendAt: string;
   status: "PENDING" | "SENT" | "CANCELLED" | "FAILED";
+  /** Name of the file that goes out with it */
+  attachmentName?: string | null;
 }
 
 export interface ReminderView {

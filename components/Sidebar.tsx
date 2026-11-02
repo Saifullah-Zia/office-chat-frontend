@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useState, useMemo, useCallback } from "react";
-import { useRouter } from "next/navigation";
 import {
-  MessageSquare, Users, Search, LogOut, Plus, UsersRound, Moon, Sun, BellOff, Star, X, Shield,
+  MessageSquare, Users, Search, LogOut, UsersRound, Moon, Sun, BellOff, Star, X, Shield, Contact,
   Pin, Archive, ArchiveRestore, MoreVertical, Phone, PhoneIncoming, PhoneOutgoing, PhoneMissed, Video,
   Settings, ChevronLeft, CheckCheck, Bell, Hash,
 } from "lucide-react";
@@ -16,12 +15,14 @@ import {
 } from "@/types";
 import { subscribe, Topics, disconnectStomp } from "@/lib/socket";
 import { clearAuth } from "@/lib/auth";
+import { disablePush } from "@/lib/push";
 import { playMessageChime } from "@/lib/sound";
 import { desktopNotify } from "@/lib/notify";
 import { showToast } from "@/lib/toast";
 import ActivityPanel, { ActivityTab } from "./ActivityPanel";
 import Avatar from "./Avatar";
-import AddUserModal from "./AddUserModal";
+import ProfileEditModal from "./ProfileEditModal";
+import DirectoryModal from "./DirectoryModal";
 import AdminPanel from "./AdminPanel";
 import CreateGroupModal from "./CreateGroupModal";
 import SettingsModal from "./SettingsModal";
@@ -78,7 +79,6 @@ const STATUS_PRESETS = [
 /* ── component ────────────────────────────────────────────────────────── */
 
 export default function Sidebar() {
-  const router = useRouter();
   const { theme, setTheme, toggleTheme } = useTheme();
   const { initiateCall } = useCallContext();
   const drafts             = useStore((s) => s.drafts);
@@ -176,9 +176,10 @@ export default function Sidebar() {
 
   const [tab, setTab]                     = useState<"chats" | "directory" | "starred" | "calls">("chats");
   const [search, setSearch]               = useState("");
-  const [isAddUserOpen, setIsAddUserOpen] = useState(false);
   const [isGroupOpen, setIsGroupOpen]     = useState(false);
   const [showStatusModal, setShowStatusModal] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showDirectory, setShowDirectory] = useState(false);
   const [isAdminOpen, setIsAdminOpen]         = useState(false);
 
   /* ── initial data ────────────────────────────────────────────────── */
@@ -247,7 +248,7 @@ export default function Sidebar() {
           const me = (useStore.getState().userName ?? "").toLowerCase();
           const text = (msg.content ?? "").toLowerCase();
           const mentionsMe = (me && (text.includes(`@${me}`) || text.startsWith(`replying to ${me}:`)))
-            || (conv?.type === "GROUP" && (text.includes("@all") || text.includes("@here")));
+            || (conv?.type === "GROUP" && /(^|[^\w@])@(all|here|channel)\b/.test(text));
           if (mentionsMe) setActivityCount((n) => n + 1);
           // Mentions still alert in muted chats (like WhatsApp); plain messages don't.
           if (conv && isMutedConv(conv) && !mentionsMe) return;
@@ -264,6 +265,15 @@ export default function Sidebar() {
     })();
     return () => { sub?.unsubscribe(); };
   }, [userId]);
+
+  /* ── profile updates (photo, job title, manager) ── */
+  useEffect(() => {
+    let sub: { unsubscribe: () => void } | null = null;
+    subscribe("/topic/user.updated", (frame) => useStore.getState().upsertUser(JSON.parse(frame.body)))
+      .then((s) => { sub = s; })
+      .catch(() => {});
+    return () => sub?.unsubscribe();
+  }, []);
 
   /* ── user status websocket ────────────────────────────────────────── */
   useEffect(() => {
@@ -414,6 +424,8 @@ export default function Sidebar() {
   };
 
   const handleLogout = async () => {
+    // Stop push to this browser first (needs the token), so the next person here doesn't get our messages.
+    await disablePush(false);
     // End the session server-side too, so this token stops working immediately.
     await apiPost("/api/account/logout").catch(() => {});
     disconnectStomp().catch(() => {});
@@ -450,13 +462,7 @@ export default function Sidebar() {
           <h1>Office Chat</h1>
         </div>
         <div className="sb-brand-actions">
-          <button
-            className="sb-icon-btn"
-            onClick={() => setGlobalSearchOpen(true)}
-            title="Global Search (Ctrl+K)"
-          >
-            <Search size={15} />
-          </button>
+{userRole !== "PROVIDER" && (
           <button
             className="sb-icon-btn"
             onClick={() => setIsChannelsOpen(true)}
@@ -465,6 +471,7 @@ export default function Sidebar() {
           >
             <Hash size={15} />
           </button>
+)}
           <button
             className="sb-icon-btn sb-activity-btn"
             onClick={() => setActivityTab("mentions")}
@@ -475,18 +482,15 @@ export default function Sidebar() {
             {activityCount > 0 && <span className="sb-activity-badge">{activityCount > 99 ? "99+" : activityCount}</span>}
           </button>
           {userRole === "ADMIN" && (
-            <>
-              <button className="sb-icon-btn" onClick={() => setIsAdminOpen(true)} title="Admin Panel">
-                <Shield size={15} />
-              </button>
-              <button className="sb-icon-btn" onClick={() => setIsAddUserOpen(true)} title="Add Employee">
-                <Plus size={16} />
-              </button>
-            </>
+            <button className="sb-icon-btn" onClick={() => setIsAdminOpen(true)} title="Admin Panel (users, analytics, reports)" aria-label="Admin Panel">
+              <Shield size={15} />
+            </button>
           )}
+{userRole !== "PROVIDER" && (
           <button className="sb-icon-btn sb-icon-btn--accent" onClick={() => setIsGroupOpen(true)} title="Create Group">
             <UsersRound size={16} />
           </button>
+)}
         </div>
       </div>
 
@@ -498,7 +502,18 @@ export default function Sidebar() {
           placeholder="Filter conversations..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          aria-label="Filter conversations"
         />
+        {/* Search everything (messages, files, people) lives here instead of in the header */}
+        <button
+          type="button"
+          className="sb-search-all"
+          onClick={() => setGlobalSearchOpen(true)}
+          title="Search all messages, files and people (Ctrl+K)"
+          aria-label="Search everything"
+        >
+          Ctrl K
+        </button>
       </div>
 
       {/* tabs */}
@@ -558,7 +573,7 @@ export default function Sidebar() {
                         <Users size={20} />
                       </div>
                     ) : (
-                      <Avatar name={name} size={42} online={isOnline} />
+                      <Avatar userId={other?.id} name={name} size={42} online={isOnline} />
                     )}
                   </div>
                   <div className="sb-item-body">
@@ -648,7 +663,7 @@ export default function Sidebar() {
                   {conv?.type === "GROUP" ? (
                     <div className="sb-group-icon"><Users size={20} /></div>
                   ) : (
-                    <Avatar name={name} size={42} online={other ? onlineUserIds.has(other.id) : false} />
+                    <Avatar userId={other?.id} name={name} size={42} online={other ? onlineUserIds.has(other.id) : false} />
                   )}
                   <div className="sb-item-body">
                     <div className="sb-item-top">
@@ -680,12 +695,16 @@ export default function Sidebar() {
             })
           )
         ) : tab === "directory" ? (
-          filteredUsers.length === 0 ? (
+          <>
+          <button type="button" className="sb-org-link" onClick={() => setShowDirectory(true)}>
+            <Contact size={16} /> Profiles &amp; org chart
+          </button>
+          {filteredUsers.length === 0 ? (
             <p className="sb-empty">No team members found</p>
           ) : (
             filteredUsers.map((user) => (
               <button key={user.id} className="sb-item" onClick={() => handleStartDirect(user.id)}>
-                <Avatar name={user.name} size={42} online={onlineUserIds.has(user.id)} />
+                <Avatar userId={user.id} name={user.name} size={42} online={onlineUserIds.has(user.id)} />
                 <div className="sb-item-body">
                   <div className="sb-item-top">
                     <span className="sb-item-name">{user.name}</span>
@@ -697,7 +716,8 @@ export default function Sidebar() {
                 </div>
               </button>
             ))
-          )
+          )}
+          </>
         ) : (
           /* Starred list */
           starredList.length === 0 ? (
@@ -734,10 +754,12 @@ export default function Sidebar() {
       <div className="sb-footer">
         <div
           className="sb-footer-avatar-wrap"
-          onClick={() => setShowStatusModal(true)}
-          title="Click to set work status"
+          onClick={() => setShowProfileModal(true)}
+          title="Edit profile and photo"
+          role="button"
+          aria-label="Edit profile and photo"
         >
-          <Avatar name={userName ?? "User"} size={36} />
+          <Avatar userId={userId} name={userName ?? "User"} size={36} />
           <span className="sb-status-badge">{userStatus ? userStatus.emoji : "🟢"}</span>
         </div>
         <div
@@ -772,10 +794,10 @@ export default function Sidebar() {
       {/* Work Status Modal */}
       {showStatusModal && (
         <div className="sb-modal-overlay" onClick={() => setShowStatusModal(false)}>
-          <div className="sb-status-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="sb-status-modal" role="dialog" aria-modal="true" aria-label="Set work status" onClick={(e) => e.stopPropagation()}>
             <div className="sb-status-modal-header">
               <h3>Set Work Status</h3>
-              <button type="button" className="sb-modal-close" onClick={() => setShowStatusModal(false)}>
+              <button type="button" className="sb-modal-close" onClick={() => setShowStatusModal(false)} aria-label="Close">
                 <X size={16} />
               </button>
             </div>
@@ -806,7 +828,8 @@ export default function Sidebar() {
       )}
 
       {/* modals */}
-      <AddUserModal isOpen={isAddUserOpen} onClose={() => setIsAddUserOpen(false)} onUserAdded={(u) => setUsers([...users, u])} />
+      {showProfileModal && <ProfileEditModal onClose={() => setShowProfileModal(false)} />}
+      {showDirectory && <DirectoryModal onClose={() => setShowDirectory(false)} onStartChat={handleStartDirect} />}
       <CreateGroupModal isOpen={isGroupOpen} onClose={() => setIsGroupOpen(false)} users={users.filter((u) => u.id !== userId)} onGroupCreated={handleGroupCreated} />
       <AdminPanel
         open={isAdminOpen}
@@ -817,19 +840,25 @@ export default function Sidebar() {
       <style>{`
         .sb { width:320px;height:100%;background:var(--bg-primary);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0; }
 
-        .sb-brand { padding:1rem 1rem 0.5rem;display:flex;align-items:center;justify-content:space-between; }
-        .sb-brand-left { display:flex;align-items:center;gap:0.5rem; }
+        .sb-brand { padding:1rem 1rem 0.5rem;display:flex;align-items:center;justify-content:space-between;gap:0.5rem; }
+        .sb-brand-left { display:flex;align-items:center;gap:0.5rem;min-width:0;flex-shrink:1; }
         .sb-logo { width:32px;height:32px;border-radius:8px;background:var(--accent-gradient);color:var(--text-on-accent);display:flex;align-items:center;justify-content:center; }
-        .sb-brand h1 { font-size:1.125rem;font-weight:800;color:var(--text-primary);margin:0;letter-spacing:-0.02em; }
-        .sb-brand-actions { display:flex;gap:0.25rem; }
+        .sb-brand h1 { font-size:1.125rem;font-weight:800;color:var(--text-primary);margin:0;letter-spacing:-0.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+        /* One row of header buttons; the title shrinks (ellipsis) before anything wraps */
+        .sb-brand-actions { display:flex;gap:0.25rem;flex-shrink:0; }
+        .sb-icon-btn { flex-shrink:0; }
+        .sb-org-link { display:flex;align-items:center;gap:0.5rem;width:calc(100% - 0.5rem);margin:0.25rem;padding:0.6rem 0.75rem;border-radius:10px;border:1px dashed var(--border);background:var(--bg-secondary);color:var(--accent);font-size:0.84rem;font-weight:600;cursor:pointer; }
+        .sb-org-link:hover { background:var(--accent-soft); }
         .sb-icon-btn { width:30px;height:30px;border-radius:8px;background:var(--bg-tertiary);color:var(--text-tertiary);display:flex;align-items:center;justify-content:center;transition:all 0.15s; }
         .sb-icon-btn:hover { background:var(--bg-inset);color:var(--text-primary); }
         .sb-icon-btn--accent { background:var(--accent-soft);color:var(--accent); }
         .sb-icon-btn--accent:hover { background:var(--accent-muted); }
 
         .sb-search { margin:0.5rem 1rem;position:relative; }
+        .sb-search-all { position:absolute;right:0.4rem;top:50%;transform:translateY(-50%);padding:0.15rem 0.45rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-muted);font-size:0.68rem;font-weight:600;cursor:pointer;white-space:nowrap; }
+        .sb-search-all:hover { color:var(--accent);border-color:var(--accent); }
         .sb-search-icon { position:absolute;left:0.75rem;top:50%;transform:translateY(-50%);color:var(--text-faint);pointer-events:none; }
-        .sb-search input { width:100%;padding:0.5rem 0.75rem 0.5rem 2.25rem;background:var(--bg-secondary);border:1.5px solid var(--border);border-radius:10px;font-size:0.8125rem;color:var(--text-primary);transition:border-color 0.15s; }
+        .sb-search input { width:100%;padding:0.5rem 4rem 0.5rem 2.25rem;background:var(--bg-secondary);border:1.5px solid var(--border);border-radius:10px;font-size:0.8125rem;color:var(--text-primary);transition:border-color 0.15s; }
         .sb-search input:focus { border-color:var(--accent);background:var(--bg-primary);outline:none; }
 
         .sb-tabs { display:flex;gap:0.25rem;margin:0.25rem 1rem 0.5rem;background:var(--bg-tertiary);border-radius:10px;padding:3px; }

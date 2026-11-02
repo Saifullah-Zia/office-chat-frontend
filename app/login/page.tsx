@@ -18,6 +18,7 @@ export default function LoginPage() {
 
   // If already logged in, redirect to chat
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mark client mount for hydration-safe rendering
     setMounted(true);
     if (isAuthenticated()) {
       router.replace("/");

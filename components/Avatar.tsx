@@ -1,9 +1,13 @@
 "use client";
 
 import { useMemo } from "react";
+import { useStore } from "@/lib/store";
+import { apiUrl } from "@/lib/media";
 
 interface AvatarProps {
   src?: string | null;
+  /** Looks up this user's current photo (kept live in the store), so callers needn't pass src. */
+  userId?: number | null;
   name: string;
   size?: number;
   online?: boolean;
@@ -33,7 +37,9 @@ function initials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-export default function Avatar({ src, name, size = 36, online, className = "" }: AvatarProps) {
+export default function Avatar({ src, userId, name, size = 36, online, className = "" }: AvatarProps) {
+  const storePhoto = useStore((s) => (userId ? s.users.find((u) => u.id === userId)?.profilePicUrl : null));
+  const photo = storePhoto ?? src;
   const [bg, fg] = useMemo(() => PALETTE[nameToIndex(name)], [name]);
   const text = useMemo(() => initials(name), [name]);
   const fontSize = Math.max(10, Math.round(size * 0.38));
@@ -46,9 +52,9 @@ export default function Avatar({ src, name, size = 36, online, className = "" }:
       aria-label={name}
       role="img"
     >
-      {src ? (
+      {photo ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt={name} className="av-img" width={size} height={size} />
+        <img src={apiUrl(photo)} alt={name} className="av-img" width={size} height={size} />
       ) : (
         <div
           className="av-init"

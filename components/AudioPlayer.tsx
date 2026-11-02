@@ -103,7 +103,6 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
       const fullUrl = buildAudioUrl(src);
 
       if (process.env.NODE_ENV !== "production") {
-        // eslint-disable-next-line no-console
         console.log("AudioPlayer fetching:", fullUrl);
       }
 
@@ -204,6 +203,7 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
   }, [src]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- (re)load the audio whenever the source changes
     loadAudio();
 
     return () => {
@@ -277,7 +277,7 @@ export default function AudioPlayer({ src, isMine }: AudioPlayerProps) {
     return `${mins}:${remainder.toString().padStart(2, "0")}`;
   };
 
-  const currentTime = audioRef.current?.currentTime ?? 0;
+  const currentTime = (progress / 100) * duration;
   const displayTime = isPlaying ? formatTime(currentTime) : formatTime(duration);
   const progressRatio = progress / 100;
 

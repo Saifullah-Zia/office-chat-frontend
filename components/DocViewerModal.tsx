@@ -2,7 +2,7 @@
 
 import React, { useEffect } from "react";
 import { X, Download, FileText, ExternalLink } from "lucide-react";
-import { downloadHref } from "@/lib/media";
+import { downloadHref, saveFile } from "@/lib/media";
 
 interface DocViewerModalProps {
   url: string;
@@ -23,7 +23,7 @@ export default function DocViewerModal({ url, name, isImage, isPdf, onClose }: D
 
   return (
     <div className="dvm-overlay" onClick={onClose}>
-      <div className="dvm-shell" onClick={(e) => e.stopPropagation()}>
+      <div className="dvm-shell" role="dialog" aria-modal="true" aria-label={`Preview of ${name}`} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="dvm-header">
           <div className="dvm-title-group">
@@ -35,8 +35,7 @@ export default function DocViewerModal({ url, name, isImage, isPdf, onClose }: D
             <a
               href={downloadHref(url)}
               download={name}
-              target="_blank"
-              rel="noopener noreferrer"
+              onClick={(e) => { e.preventDefault(); void saveFile(url, name); }}
               className="dvm-btn"
               title="Download file"
             >
@@ -74,7 +73,7 @@ export default function DocViewerModal({ url, name, isImage, isPdf, onClose }: D
               <FileText size={48} className="dvm-unsupported-icon" />
               <p className="dvm-unsupported-title">Preview not available for this file type</p>
               <p className="dvm-unsupported-sub">Click download to view this file on your computer.</p>
-              <a href={downloadHref(url)} download={name} className="dvm-download-cta">
+              <a href={downloadHref(url)} download={name} className="dvm-download-cta" onClick={(e) => { e.preventDefault(); void saveFile(url, name); }}>
                 <Download size={16} /> Download {name}
               </a>
             </div>

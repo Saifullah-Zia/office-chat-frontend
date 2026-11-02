@@ -154,7 +154,7 @@ export default function ActivityPanel({ initialTab, onClose, onChanged }: Activi
               ? empty(<AtSign size={30} />, "No mentions yet", "When someone @mentions you or replies to you, it shows up here.")
               : mentions.map((m) => (
                 <button key={m.id} type="button" className="acp-item" onClick={() => jump(m.conversationId, m.threadRootId ?? m.id)}>
-                  <Avatar name={m.senderName} size={32} />
+                  <Avatar userId={m.senderId} name={m.senderName} size={32} />
                   <div className="acp-item-body">
                     <div className="acp-item-top">
                       <span className="acp-item-title">{m.senderName} <span className="acp-in">in {chatName(m.conversationId, conversations, userId)}</span></span>

@@ -61,7 +61,7 @@ export default function MessageInfoModal({ message, onClose }: MessageInfoModalP
               {readBy.length === 0 && <p className="mim-empty">Nobody yet</p>}
               {readBy.map((r) => (
                 <div key={r.userId} className="mim-row">
-                  <Avatar name={r.name} size={30} />
+                  <Avatar userId={r.userId} name={r.name} size={30} />
                   <span className="mim-name">{r.name}</span>
                   <span className="mim-when">{formatWhen(r.readAt)}</span>
                 </div>
@@ -72,7 +72,7 @@ export default function MessageInfoModal({ message, onClose }: MessageInfoModalP
                   <h4 className="mim-title"><Check size={14} /> Not read yet</h4>
                   {notRead.map((r) => (
                     <div key={r.userId} className="mim-row">
-                      <Avatar name={r.name} size={30} />
+                      <Avatar userId={r.userId} name={r.name} size={30} />
                       <span className="mim-name">{r.name}</span>
                     </div>
                   ))}

@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MessageResponse, AttachmentResponse } from "@/types";
 import AudioPlayer from "./AudioPlayer";
 import PollCard from "./PollCard";
 import Avatar from "./Avatar";
 import {
   FileText, Download, Check, CheckCheck, Copy, Reply, Edit2, Trash2,
-  Check as CheckIcon, X as XIcon, X, Pin, Star, Forward, Info, Flag, AlarmClock, ListTodo, MessagesSquare
+  Check as CheckIcon, X as XIcon, X, Pin, Star, Forward, Info, Flag, AlarmClock, ListTodo, MessagesSquare, Languages, Loader2, ChevronDown, Plus
 } from "lucide-react";
 import { RemindMeModal, CreateTaskModal } from "./PlannerModals";
 import ForwardModal from "./ForwardModal";
@@ -15,11 +15,14 @@ import MessageInfoModal from "./MessageInfoModal";
 import ReportModal from "./ReportModal";
 import ImageViewer, { ViewerImage } from "./ImageViewer";
 import LinkPreviewCard, { firstUrl } from "./LinkPreviewCard";
-import { downloadHref, isViewableImage } from "@/lib/media";
-import { apiPost, apiPut, apiDelete } from "@/lib/api";
+import { apiUrl, downloadHref, isViewableImage, saveFile } from "@/lib/media";
+import { apiPost, apiPut, apiDelete, apiErrorMessage } from "@/lib/api";
+import { aiEnabled, preferredLanguage } from "@/lib/ai";
+import { showToast } from "@/lib/toast";
 import { useStore } from "@/lib/store";
 import RichTextRenderer from "./RichTextRenderer";
 import DocViewerModal from "./DocViewerModal";
+import { AckDetailsModal, EditHistoryModal } from "./MessageMetaModals";
 
 interface MessageBubbleProps {
   message: MessageResponse;
@@ -27,6 +30,8 @@ interface MessageBubbleProps {
   onReply?: (msg: MessageResponse) => void;
   /** Main timeline only: open this message's thread. */
   onOpenThread?: (msg: MessageResponse) => void;
+  /** Announcement groups: acknowledgement state for this post. */
+  ack?: { count: number; audience: number; mine: boolean; canViewList: boolean; onAck: () => void };
 }
 
 function formatTime(isoString: string): string {
@@ -60,8 +65,80 @@ function parseReplyAndContent(rawContent: string): { reply: { sender: string; te
   return { reply: null, text: rawContent };
 }
 
-export default function MessageBubble({ message, isMine, onReply, onOpenThread }: MessageBubbleProps) {
-  const [copied, setCopied] = useState(false);
+const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+const MORE_REACTIONS = ["🔥", "🎉", "👏", "✅", "👀", "💯"];
+
+function MenuItem({ icon, label, onClick, danger }: { icon: ReactNode; label: string; onClick: () => void; danger?: boolean }) {
+  return (
+    <button type="button" role="menuitem" className={`mb-menu-item ${danger ? "mb-menu-item--danger" : ""}`} onClick={onClick}>
+      {icon}<span>{label}</span>
+    </button>
+  );
+}
+
+export default function MessageBubble({ message, isMine, onReply, onOpenThread, ack }: MessageBubbleProps) {
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [ackListOpen, setAckListOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuUp, setMenuUp] = useState(false);
+  const [moreEmojis, setMoreEmojis] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  const closeMenu = () => { setMenuOpen(false); setMoreEmojis(false); };
+  const openMenu = (anchor: HTMLElement) => {
+    // Open upward when there isn't room below (messages near the bottom of the chat).
+    const r = anchor.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom;
+    setMenuUp(below < 420 && r.top > below);
+    setMenuOpen(true);
+  };
+
+  // Close on outside click, Escape, or scroll.
+  useEffect(() => {
+    if (!menuOpen && !moreEmojis) return;
+    const onDown = (e: MouseEvent | TouchEvent) => {
+      if (!wrapperRef.current?.contains(e.target as Node)) { setMenuOpen(false); setMoreEmojis(false); }
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { setMenuOpen(false); setMoreEmojis(false); } };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen, moreEmojis]);
+
+  // Move focus into the menu so it works from the keyboard.
+  useEffect(() => {
+    if (menuOpen) menuRef.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
+  }, [menuOpen]);
+
+  const [canTranslate, setCanTranslate] = useState(false);
+  const [translation, setTranslation] = useState<string | null>(null);
+  const [showTranslation, setShowTranslation] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    aiEnabled().then((on) => { if (alive) setCanTranslate(on); });
+    return () => { alive = false; };
+  }, []);
+
+  const handleTranslate = async () => {
+    if (translation) { setShowTranslation((v) => !v); return; }
+    setTranslating(true);
+    try {
+      const res = await apiPost<{ translation: string }>(`/api/messages/${message.id}/translate`, { targetLanguage: preferredLanguage() });
+      setTranslation(res.translation);
+      setShowTranslation(true);
+    } catch (err) {
+      showToast(apiErrorMessage(err) ?? "Couldn't translate this message.");
+    } finally {
+      setTranslating(false);
+    }
+  };
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
@@ -115,7 +192,6 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
 
   const isStarred = starredMessageIds.has(message.id);
   const timeStr = formatTime(message.createdAt);
-  const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
   const isDeleted = message.deleted ?? false;
   const isEdited = message.edited ?? false;
@@ -162,9 +238,7 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
 
   const handleCopy = () => {
     if (message.content) {
-      navigator.clipboard.writeText(message.content);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      navigator.clipboard.writeText(message.content).then(() => showToast("Copied")).catch(() => {});
     }
   };
 
@@ -179,11 +253,7 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
   const isVoiceMessage = !isDeleted && !!audioAttachment;
   const isTaggedAudioWithoutFile =
     !isDeleted && !audioAttachment && (message.type === "VOICE" || message.type === "AUDIO");
-  const audioSrc = audioAttachment
-    ? audioAttachment.downloadUrl.startsWith("http")
-      ? audioAttachment.downloadUrl
-      : `${API_BASE}${audioAttachment.downloadUrl}`
-    : undefined;
+  const audioSrc = audioAttachment ? apiUrl(audioAttachment.downloadUrl) : undefined;
 
   const isRead = message.read ?? false;
   const isDelivered = message.delivered ?? false;
@@ -206,12 +276,20 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
       {/* Sender Avatar */}
       {!isMine && (
         <div className="mb-avatar-wrapper">
-          <Avatar name={message.senderName} size={30} />
+          <Avatar userId={message.senderId} name={message.senderName} size={30} />
         </div>
       )}
 
       {/* Bubble Wrapper */}
-      <div className="mb-wrapper">
+      <div
+        className="mb-wrapper"
+        ref={wrapperRef}
+        onContextMenu={(e) => {
+          if (isDeleted || (e.target as HTMLElement).closest("a, audio, video, input, textarea")) return;
+          e.preventDefault();
+          openMenu(e.currentTarget);
+        }}
+      >
         {/* Sender Name */}
         {!isMine && (
           <span className="mb-sender-name">{message.senderName}</span>
@@ -231,134 +309,59 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
           </div>
         )}
 
-        {/* Hover Action Bar */}
+        {/* Hover: quick reactions + menu (WhatsApp-style) */}
         {!isDeleted && (
-          <div className="mb-action-bar">
-            {["❤️", "👍", "😂", "😮", "😢", "🔥"].map((emoji) => (
-              <button
-                key={emoji}
-                type="button"
-                className="mb-action-btn mb-emoji-btn"
-                onClick={() => handleReact(emoji)}
-                title={`React with ${emoji}`}
-              >
+          <div className={`mb-react-pill ${menuOpen || moreEmojis ? "mb-react-pill--open" : ""}`}>
+            {(moreEmojis ? [...QUICK_REACTIONS, ...MORE_REACTIONS] : QUICK_REACTIONS).map((emoji) => (
+              <button key={emoji} type="button" className="mb-react-btn" onClick={() => { handleReact(emoji); setMoreEmojis(false); }}
+                aria-label={`React with ${emoji}`}>
                 {emoji}
               </button>
             ))}
-            {message.content && (
-              <button
-                type="button"
-                className="mb-action-btn"
-                onClick={handleCopy}
-                title={copied ? "Copied!" : "Copy message"}
-              >
-                <Copy size={13} />
+            {!moreEmojis && (
+              <button type="button" className="mb-react-btn mb-react-more" onClick={() => setMoreEmojis(true)} aria-label="More reactions">
+                <Plus size={16} />
               </button>
             )}
-            <button
-              type="button"
-              className={`mb-action-btn ${isStarred ? "mb-action-btn--starred" : ""}`}
-              onClick={() => toggleStarMessage(message)}
-              title={isStarred ? "Unstar message" : "Star message"}
-            >
-              <Star size={13} fill={isStarred ? "currentColor" : "none"} />
+            <span className="mb-react-sep" />
+            <button type="button" className="mb-react-btn mb-react-more" onClick={(e) => openMenu(e.currentTarget)}
+              aria-label="Message options" aria-haspopup="menu" aria-expanded={menuOpen}>
+              <ChevronDown size={17} />
             </button>
-            {message.type !== "POLL" && (
-              <button
-                type="button"
-                className="mb-action-btn"
-                onClick={() => setIsForwardOpen(true)}
-                title="Forward"
-              >
-                <Forward size={13} />
-              </button>
+          </div>
+        )}
+
+        {menuOpen && (
+          <div
+            ref={menuRef}
+            role="menu"
+            aria-label="Message options"
+            className={`mb-menu ${menuUp ? "mb-menu--up" : ""}`}
+            onClick={(e) => { if ((e.target as HTMLElement).closest("[role=menuitem]")) closeMenu(); }}
+          >
+            {onReply && <MenuItem icon={<Reply size={17} />} label="Reply" onClick={() => onReply(message)} />}
+            {onOpenThread && <MenuItem icon={<MessagesSquare size={17} />} label="Reply in thread" onClick={() => onOpenThread(message)} />}
+            {message.content && <MenuItem icon={<Copy size={17} />} label="Copy" onClick={handleCopy} />}
+            {canTranslate && message.content && message.type !== "POLL" && (
+              <MenuItem icon={<Languages size={17} />}
+                label={translation ? (showTranslation ? "Show original" : "Show translation") : `Translate to ${preferredLanguage()}`}
+                onClick={handleTranslate} />
             )}
-            {isMine && (
-              <button
-                type="button"
-                className="mb-action-btn"
-                onClick={() => setIsInfoOpen(true)}
-                title="Message info (read by)"
-              >
-                <Info size={13} />
-              </button>
-            )}
-            <button
-              type="button"
-              className="mb-action-btn"
-              onClick={() => setIsRemindOpen(true)}
-              title="Remind me about this"
-            >
-              <AlarmClock size={13} />
-            </button>
-            <button
-              type="button"
-              className="mb-action-btn"
-              onClick={() => setIsTaskOpen(true)}
-              title="Create task from message"
-            >
-              <ListTodo size={13} />
-            </button>
-            {!isMine && (
-              <button
-                type="button"
-                className="mb-action-btn"
-                onClick={() => setIsReportOpen(true)}
-                title="Report message"
-              >
-                <Flag size={13} />
-              </button>
-            )}
-            {onOpenThread && (
-              <button
-                type="button"
-                className="mb-action-btn"
-                onClick={() => onOpenThread(message)}
-                title="Reply in thread"
-              >
-                <MessagesSquare size={13} />
-              </button>
-            )}
-            {onReply && (
-              <button
-                type="button"
-                className="mb-action-btn"
-                onClick={() => onReply(message)}
-                title="Reply"
-              >
-                <Reply size={13} />
-              </button>
-            )}
-            <button
-              type="button"
-              className={`mb-action-btn ${message.pinned ? "mb-action-btn--pinned" : ""}`}
-              onClick={handleTogglePin}
-              title={message.pinned ? "Unpin message" : "Pin message"}
-            >
-              <Pin size={13} />
-            </button>
+            {message.type !== "POLL" && <MenuItem icon={<Forward size={17} />} label="Forward" onClick={() => setIsForwardOpen(true)} />}
+            <MenuItem icon={<Pin size={17} />} label={message.pinned ? "Unpin" : "Pin"} onClick={handleTogglePin} />
+            <MenuItem icon={<Star size={17} />} label={isStarred ? "Unstar" : "Star"} onClick={() => toggleStarMessage(message)} />
             {isMine && !isVoiceMessage && (
-              <button
-                type="button"
-                className="mb-action-btn"
-                onClick={() => {
-                  setEditText(message.content);
-                  setIsEditing(true);
-                }}
-                title="Edit message"
-              >
-                <Edit2 size={13} />
-              </button>
+              <MenuItem icon={<Edit2 size={17} />} label="Edit" onClick={() => { setEditText(message.content); setIsEditing(true); }} />
             )}
+            {isMine && <MenuItem icon={<Info size={17} />} label="Message info" onClick={() => setIsInfoOpen(true)} />}
+            <MenuItem icon={<AlarmClock size={17} />} label="Remind me" onClick={() => setIsRemindOpen(true)} />
+            <MenuItem icon={<ListTodo size={17} />} label="Create task" onClick={() => setIsTaskOpen(true)} />
+            {!isMine && <MenuItem icon={<Flag size={17} />} label="Report" onClick={() => setIsReportOpen(true)} />}
             {canEditOrDelete && (
-              <button
-                type="button"
-                className="mb-action-btn mb-action-btn--delete"
-                onClick={handleDeleteMessage}
-                title="Delete message"
-              >
-                <Trash2 size={13} />
-              </button>
+              <>
+                <div className="mb-menu-sep" role="separator" />
+                <MenuItem icon={<Trash2 size={17} />} label="Delete" danger onClick={handleDeleteMessage} />
+              </>
             )}
           </div>
         )}
@@ -425,6 +428,15 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
                     </div>
                   )}
                   <RichTextRenderer content={parsed.text} isMine={isMine} currentUserName={currentUserName} />
+                  {translating && (
+                    <span className="mb-translation-label mb-translating"><Loader2 size={11} className="spin" /> Translating…</span>
+                  )}
+                  {showTranslation && translation && (
+                    <div className="mb-translation">
+                      <span className="mb-translation-label"><Languages size={11} /> Translated · <button type="button" onClick={() => setShowTranslation(false)}>Show original only</button></span>
+                      <p>{translation}</p>
+                    </div>
+                  )}
                 </div>
               );
             })()}
@@ -438,9 +450,7 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
             {message.attachments.map((att: AttachmentResponse) => {
               const isImage = isViewableImage(att);
               const isPdf = (att.filename ?? att.fileName ?? "").toLowerCase().endsWith(".pdf") || (att.contentType ?? "").includes("pdf");
-              const downloadUrl = att.downloadUrl.startsWith("http")
-                ? att.downloadUrl
-                : `${API_BASE}${att.downloadUrl}`;
+              const downloadUrl = apiUrl(att.downloadUrl);
               const name = att.filename ?? att.fileName ?? att.originalName ?? "File";
               const bytes = att.size ?? att.fileSize ?? 0;
 
@@ -474,7 +484,7 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
                     href={downloadHref(downloadUrl)}
                     download={name}
                     className="file-dl-link"
-                    onClick={(e) => e.stopPropagation()}
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); void saveFile(downloadUrl, name); }}
                     title="Download file directly"
                   >
                     <Download size={16} className="file-dl-icon" />
@@ -523,7 +533,7 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
         {/* Reactions Modal */}
         {showReactionsModal && (
           <div className="mb-rm-overlay" onClick={() => setShowReactionsModal(false)}>
-            <div className="mb-rm-card" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-rm-card" role="dialog" aria-modal="true" aria-label="Reactions" onClick={(e) => e.stopPropagation()}>
               <div className="mb-rm-header">
                 <h3>{totalReactionsCount} {totalReactionsCount === 1 ? "reaction" : "reactions"}</h3>
                 <button
@@ -563,7 +573,7 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
                 ) : (
                   filteredReactionDetails.map((r, idx) => (
                     <div key={`${r.userId}-${idx}`} className="mb-rm-item">
-                      <Avatar name={r.userName} size={40} />
+                      <Avatar userId={r.userId} name={r.userName} size={40} />
                       <div className="mb-rm-user-info">
                         <span className="mb-rm-user-name">
                           {r.userName} {r.userId === currentUserId ? "(You)" : ""}
@@ -592,9 +602,22 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
           </button>
         )}
 
+        {ack && !isDeleted && (
+          <div className={`mb-ack ${isMine ? "mb-ack--mine" : ""}`}>
+            {!isMine && (ack.mine
+              ? <span className="mb-ack-done"><CheckCheck size={13} /> Acknowledged</span>
+              : <button type="button" className="mb-ack-btn" onClick={ack.onAck}><CheckIcon size={13} /> Acknowledge</button>)}
+            {ack.canViewList
+              ? <button type="button" className="mb-ack-count" onClick={() => setAckListOpen(true)}>{ack.count} of {ack.audience} acknowledged</button>
+              : <span className="mb-ack-count">{ack.count} of {ack.audience} acknowledged</span>}
+          </div>
+        )}
+
         {/* Footer info: time, edited tag, status ticks */}
         <div className={`mb-footer ${isMine ? "mb-footer--mine" : "mb-footer--theirs"}`}>
-          {isEdited && !isDeleted && <span className="mb-edited-tag">(edited)</span>}
+          {isEdited && !isDeleted && (
+            <button type="button" className="mb-edited-tag" onClick={() => setHistoryOpen(true)} title="See edit history">(edited)</button>
+          )}
           {isStarred && (
             <span className="mb-starred-tag" title="Starred message">
               <Star size={10} fill="currentColor" />
@@ -611,6 +634,8 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
 
       {isForwardOpen && <ForwardModal message={message} onClose={() => setIsForwardOpen(false)} />}
       {isInfoOpen && <MessageInfoModal message={message} onClose={() => setIsInfoOpen(false)} />}
+      {historyOpen && <EditHistoryModal messageId={message.id} onClose={() => setHistoryOpen(false)} />}
+      {ackListOpen && <AckDetailsModal messageId={message.id} onClose={() => setAckListOpen(false)} />}
       {isReportOpen && (
         <ReportModal
           messageId={message.id}
@@ -648,34 +673,56 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
         .mb-container--theirs { align-self: flex-start; align-items: flex-start; }
 
         .mb-avatar-wrapper { flex-shrink: 0; align-self: flex-end; }
-        .mb-wrapper { display: inline-flex; flex-direction: column; max-width: 100%; }
+        .mb-wrapper { display: inline-flex; flex-direction: column; max-width: 100%; position: relative; }
 
-        .mb-action-bar {
-          position: absolute;
-          top: -12px;
-          display: none;
-          gap: 0.25rem;
-          background: var(--surface-card);
-          border: 1px solid var(--border);
-          border-radius: 999px;
-          padding: 2px 6px;
-          box-shadow: var(--shadow-md);
-          z-index: 5;
+        /* Reaction pill: floats above the bubble, aligned to the bubble side so it never leaves the chat */
+        .mb-react-pill {
+          position: absolute; top: -40px; z-index: 6;
+          display: none; align-items: center; gap: 2px;
+          background: var(--surface-card); border: 1px solid var(--border);
+          border-radius: 999px; padding: 4px 6px; box-shadow: var(--shadow-md);
+          /* Size to its own content, not the (possibly tiny) bubble; wrap only if wider than the screen */
+          width: max-content; max-width: calc(100vw - 32px); flex-wrap: wrap;
         }
-        .mb-row--mine .mb-action-bar { right: 0; }
-        .mb-row--theirs .mb-action-bar { left: 0; }
-        .mb-container:hover .mb-action-bar { display: flex; }
+        .mb-container--mine .mb-react-pill { right: 0; }
+        .mb-container--theirs .mb-react-pill { left: 0; }
+        .mb-container:hover .mb-react-pill, .mb-react-pill--open { display: flex; }
+        .mb-react-btn {
+          width: 34px; height: 34px; border: none; background: none; border-radius: 50%;
+          font-size: 1.3rem; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
+          transition: transform 0.12s, background 0.12s;
+        }
+        .mb-react-btn:hover { transform: scale(1.18); background: var(--bg-tertiary); }
+        .mb-react-more { color: var(--text-muted); background: var(--bg-tertiary); }
+        .mb-react-more:hover { transform: none; color: var(--text-primary); }
+        .mb-react-sep { width: 1px; height: 22px; background: var(--border); margin: 0 2px; }
 
-        .mb-action-btn {
-          background: none; border: none; color: var(--text-muted); padding: 0.25rem;
-          border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center;
-          transition: color 0.1s, background 0.1s, transform 0.1s;
+        /* Options menu */
+        .mb-menu {
+          position: absolute; top: 2px; z-index: 30; min-width: 210px;
+          background: var(--surface-card); border: 1px solid var(--border); border-radius: 14px;
+          box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18); padding: 6px 0;
+          display: flex; flex-direction: column; animation: mb-menu-in 0.12s ease-out;
         }
-        .mb-action-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
-        .mb-action-btn--pinned { color: var(--accent); background: var(--accent-soft); }
-        .mb-action-btn--starred { color: #eab308; background: #fef9c3; }
+        .mb-menu--up { top: auto; bottom: calc(100% + 44px); }
+        .mb-container--mine .mb-menu { right: 0; }
+        .mb-container--theirs .mb-menu { left: 0; }
+        @keyframes mb-menu-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+        .mb-menu-item {
+          display: flex; align-items: center; gap: 0.85rem; width: 100%; padding: 0.6rem 1.1rem;
+          background: none; border: none; text-align: left; cursor: pointer;
+          font-size: 0.9rem; color: var(--text-primary);
+        }
+        .mb-menu-item svg { color: var(--text-secondary); flex-shrink: 0; }
+        .mb-menu-item:hover, .mb-menu-item:focus-visible { background: var(--bg-tertiary); outline: none; }
+        .mb-menu-item--danger, .mb-menu-item--danger svg { color: var(--danger); }
+        .mb-menu-sep { height: 1px; background: var(--border); margin: 6px 0; }
+
+        .mb-translation { margin-top: 0.4rem; padding-top: 0.4rem; border-top: 1px dashed var(--border); }
+        .mb-translation p { margin: 0.15rem 0 0; white-space: pre-wrap; word-break: break-word; }
+        .mb-translation-label { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.68rem; opacity: 0.75; }
+        .mb-translation-label button { background: none; border: none; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font-size: inherit; }
         .mb-starred-tag { color: #eab308; display: inline-flex; align-items: center; }
-        .mb-action-btn--delete:hover { background: var(--danger-soft); color: var(--danger); }
         .mb-pinned-badge {
           display: inline-flex; align-items: center; gap: 0.25rem;
           font-size: 0.6875rem; font-weight: 700; color: var(--accent);
@@ -895,7 +942,13 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread }
         }
         .mb-footer--mine { justify-content: flex-end; }
         .mb-footer--theirs { justify-content: flex-start; }
-        .mb-edited-tag { font-style: italic; color: var(--text-muted); }
+        .mb-edited-tag { font-style: italic; color: var(--text-muted); background: none; border: none; padding: 0; font-size: inherit; cursor: pointer; text-decoration: underline dotted; }
+        .mb-ack { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.3rem; flex-wrap: wrap; }
+        .mb-ack--mine { justify-content: flex-end; }
+        .mb-ack-btn { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.3rem 0.7rem; border-radius: 999px; border: 1px solid var(--accent); background: var(--accent); color: #fff; font-size: 0.75rem; font-weight: 600; cursor: pointer; }
+        .mb-ack-done { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.75rem; font-weight: 600; color: var(--success-text, #15803d); }
+        .mb-ack-count { background: none; border: none; padding: 0; font-size: 0.72rem; color: var(--text-muted); }
+        button.mb-ack-count { cursor: pointer; text-decoration: underline; }
         .mb-time { color: var(--text-faint); }
         .mb-ticks { color: var(--text-faint); display: inline-flex; align-items: center; }
         .mb-ticks--delivered { color: var(--text-faint); }

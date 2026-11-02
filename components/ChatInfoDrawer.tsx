@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   X, Users, Mail, Building, FileText, Download, UserPlus, UserMinus, ShieldCheck, ShieldOff,
   BellOff, Bell, Lock, Volume2, Phone, Video, Search, Star, ChevronRight, ArrowLeft, Image as ImageIcon,
@@ -9,9 +9,10 @@ import {
 } from "lucide-react";
 import ImageViewer, { ViewerImage } from "./ImageViewer";
 import ReportModal from "./ReportModal";
-import { isViewableImage } from "@/lib/media";
+import { apiUrl, isViewableImage } from "@/lib/media";
 import { ConversationResponse, MemberResponse, MessageResponse, UserResponse } from "@/types";
 import Avatar from "./Avatar";
+import HiddenEmail from "./HiddenEmail";
 import { useStore } from "@/lib/store";
 import { apiGet, apiPost, apiPut, apiDelete } from "@/lib/api";
 import { useCallContext } from "@/context/CallContext";
@@ -33,8 +34,15 @@ type View =
   | { kind: "media"; tab: "MEDIA" | "DOCS" | "LINKS" }
   | { kind: "starred" }
   | { kind: "member"; memberId: number };
+/** One file from GET /api/conversations/{id}/files */
+interface SharedFile {
+  file: { id: number; fileName: string; fileSize: number; mimeType: string; downloadUrl: string };
+  messageId: number;
+  senderId: number;
+  senderName: string;
+  sharedAt: string;
+}
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 const URL_REGEX = /https?:\/\/[^\s<>"')]+/g;
 
 function formatFileSize(bytes: number): string {
@@ -45,10 +53,6 @@ function formatFileSize(bytes: number): string {
 
 function formatShortDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-}
-
-function absoluteUrl(url: string): string {
-  return url.startsWith("http") ? url : `${API_BASE}${url}`;
 }
 
 function isMuted(conv: ConversationResponse): boolean {
@@ -101,36 +105,52 @@ export default function ChatInfoDrawer({
     ? conversation.members.find((m) => m.id !== myUserId)
     : undefined;
 
-  // ── Derived media / links / starred ────────────────────────────────
-  const { media, docs, links } = useMemo(() => {
+  // ── Files: every file ever shared (from the server), links from loaded messages ──
+  const [shared, setShared] = useState<SharedFile[] | null>(null);
+  const [fileQuery, setFileQuery] = useState("");
+  const [fileSender, setFileSender] = useState<number | "">("");
+  // Refetch when a new attachment arrives in this chat.
+  const attachmentCount = messages.reduce((n, m) => n + (m.attachments?.length ?? 0), 0);
+  useEffect(() => {
+    let alive = true;
+    apiGet<SharedFile[]>(`/api/conversations/${conversation.id}/files`)
+      .then((list) => { if (alive) setShared(list); })
+      .catch(() => { if (alive) setShared([]); });
+    return () => { alive = false; };
+  }, [conversation.id, attachmentCount]);
+
+  const { media, docs, links, fileSenders } = useMemo(() => {
     const media: ViewerImage[] = [];
-    const docs: { id: number; url: string; name: string; size: number; createdAt: string }[] = [];
+    const docs: { id: number; url: string; name: string; size: number; createdAt: string; sender: string }[] = [];
     const links: { key: string; url: string; messageId: number; sender: string; createdAt: string }[] = [];
+    const senders = new Map<number, string>();
+    const q = fileQuery.trim().toLowerCase();
+
+    (shared ?? []).forEach(({ file, senderId, senderName, sharedAt }) => {
+      senders.set(senderId, senderName);
+      const name = file.fileName ?? "File";
+      if (fileSender !== "" && senderId !== fileSender) return;
+      if (q && !name.toLowerCase().includes(q)) return;
+      const type = file.mimeType ?? "";
+      if (isViewableImage({ contentType: type, mimeType: type })) {
+        media.push({ id: file.id, url: apiUrl(file.downloadUrl), name, sender: senderName, createdAt: sharedAt });
+      } else if (!type.startsWith("audio/")) {
+        docs.push({ id: file.id, url: apiUrl(file.downloadUrl), name, size: file.fileSize ?? 0, createdAt: sharedAt, sender: senderName });
+      }
+    });
 
     messages.forEach((m) => {
       if (m.deleted) return;
-      m.attachments?.forEach((att) => {
-        const name = att.filename ?? att.fileName ?? att.originalName ?? "File";
-        const type = att.contentType ?? att.mimeType ?? "";
-        if (isViewableImage(att)) {
-          media.push({ id: att.id, url: absoluteUrl(att.downloadUrl), name, sender: m.senderName, createdAt: m.createdAt });
-        } else if (!type.startsWith("audio/")) {
-          docs.push({
-            id: att.id,
-            url: absoluteUrl(att.downloadUrl),
-            name,
-            size: att.size ?? att.fileSize ?? 0,
-            createdAt: att.createdAt ?? m.createdAt,
-          });
-        }
-      });
       (m.content?.match(URL_REGEX) ?? []).forEach((url, i) =>
         links.push({ key: `${m.id}-${i}`, url, messageId: m.id, sender: m.senderName, createdAt: m.createdAt })
       );
     });
 
-    return { media: media.reverse(), docs: docs.reverse(), links: links.reverse() };
-  }, [messages]);
+    return {
+      media, docs, links: links.reverse(),
+      fileSenders: [...senders].sort((a, b) => a[1].localeCompare(b[1])),
+    };
+  }, [shared, messages, fileQuery, fileSender]);
 
   const starredMessages = useMemo(
     () => allStarred.filter((m) => m.conversationId === conversation.id && !m.deleted),
@@ -367,7 +387,7 @@ export default function ChatInfoDrawer({
         </div>
         <div className="cid-info-row">
           <Mail size={16} className="cid-info-icon" />
-          <a href={`mailto:${member.email}`} className="cid-info-link">{member.email}</a>
+          {member.emailHidden ? <HiddenEmail /> : <a href={`mailto:${member.email}`} className="cid-info-link">{member.email}</a>}
         </div>
         {member.department && (
           <div className="cid-info-row">
@@ -378,7 +398,7 @@ export default function ChatInfoDrawer({
         {member.role && (
           <div className="cid-info-row">
             <Briefcase size={16} className="cid-info-icon" />
-            <span>{member.role === "ADMIN" ? "Administrator" : "Employee"}</span>
+            <span>{member.role === "ADMIN" ? "Administrator" : member.role === "PROVIDER" ? "Provider" : "Employee"}</span>
           </div>
         )}
       </div>
@@ -389,7 +409,7 @@ export default function ChatInfoDrawer({
     const online = onlineUserIds.has(member.id);
     return (
       <div className="cid-hero">
-        <Avatar name={member.name} src={member.profilePicUrl} size={96} online={online} />
+        <Avatar userId={member.id} name={member.name} src={member.profilePicUrl} size={96} online={online} />
         <h2 className="cid-name">{member.name}</h2>
         <span className="cid-sub">{member.email}</span>
         <span className={`cid-presence ${online ? "cid-presence--on" : ""}`}>
@@ -695,7 +715,7 @@ export default function ChatInfoDrawer({
                   disabled={busy === `add-${u.id}`}
                   onClick={() => handleAddMember(u)}
                 >
-                  <Avatar name={u.name} src={u.profilePicUrl} size={26} />
+                  <Avatar userId={u.id} name={u.name} src={u.profilePicUrl} size={26} />
                   <span className="cid-add-user-name">{u.name}</span>
                   <UserPlus size={14} className="cid-add-icon" />
                 </button>
@@ -715,7 +735,7 @@ export default function ChatInfoDrawer({
               onClick={() => !isMe && setView({ kind: "member", memberId: m.id })}
               disabled={isMe}
             >
-              <Avatar name={m.name} src={m.profilePicUrl} size={36} online={onlineUserIds.has(m.id)} />
+              <Avatar userId={m.id} name={m.name} src={m.profilePicUrl} size={36} online={onlineUserIds.has(m.id)} />
               <div className="cid-list-text">
                 <span className="cid-list-title">{isMe ? "You" : m.name}</span>
                 <span className="cid-list-sub">{status ? `${status.emoji} ${status.text}` : m.email}</span>
@@ -793,6 +813,27 @@ export default function ChatInfoDrawer({
         ))}
       </div>
 
+      {tab !== "LINKS" && (shared?.length ?? 0) > 0 && (
+        <div className="cid-file-filters">
+          <input
+            type="search"
+            className="cid-file-search"
+            placeholder="Search files…"
+            aria-label="Search files"
+            value={fileQuery}
+            onChange={(e) => setFileQuery(e.target.value)}
+          />
+          {fileSenders.length > 1 && (
+            <select className="cid-file-search" aria-label="Shared by" value={fileSender}
+              onChange={(e) => setFileSender(e.target.value ? Number(e.target.value) : "")}>
+              <option value="">Anyone</option>
+              {fileSenders.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+          )}
+        </div>
+      )}
+      {shared === null && tab !== "LINKS" && <p className="cid-empty">Loading files…</p>}
+
       {tab === "MEDIA" && (
         media.length === 0 ? <p className="cid-empty">No media shared yet</p> : (
           <div className="cid-media-grid">
@@ -814,7 +855,7 @@ export default function ChatInfoDrawer({
                 <FileText size={18} className="cid-file-icon" />
                 <div className="cid-file-meta">
                   <span className="cid-file-name">{d.name}</span>
-                  <span className="cid-file-size">{formatFileSize(d.size)} · {formatShortDate(d.createdAt)}</span>
+                  <span className="cid-file-size">{formatFileSize(d.size)} · {d.sender} · {formatShortDate(d.createdAt)}</span>
                 </div>
                 <Download size={14} className="cid-file-dl" />
               </a>
@@ -1070,6 +1111,8 @@ export default function ChatInfoDrawer({
         .cid-danger-row:hover:not(:disabled) { background: var(--danger-soft); }
         .cid-danger-row:disabled { opacity: 0.5; cursor: wait; }
 
+        .cid-file-filters { display: flex; gap: 0.5rem; padding: 0 1rem 0.75rem; }
+        .cid-file-search { flex: 1; min-width: 0; padding: 0.45rem 0.65rem; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary); font: inherit; font-size: 0.82rem; }
         .cid-tabs {
           display: flex; gap: 2px; background: var(--bg-tertiary); padding: 3px; border-radius: 10px;
         }

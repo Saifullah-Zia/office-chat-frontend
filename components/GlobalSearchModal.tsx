@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { Search, X, MessageSquare, Users, User as UserIcon, CornerDownRight, Calendar } from "lucide-react";
+import { Search, X, MessageSquare, Users, CornerDownRight } from "lucide-react";
 import { useStore } from "@/lib/store";
 import Avatar from "./Avatar";
 import { apiGet, apiPost } from "@/lib/api";
@@ -41,6 +41,7 @@ export default function GlobalSearchModal() {
 
   // Reset query on open
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- start each search fresh when the modal opens
     if (isOpen) setQuery("");
   }, [isOpen]);
 
@@ -157,7 +158,7 @@ export default function GlobalSearchModal() {
 
   return (
     <div className="gsm-overlay" onClick={() => setOpen(false)}>
-      <div className="gsm-shell" onClick={(e) => e.stopPropagation()}>
+      <div className="gsm-shell" role="dialog" aria-modal="true" aria-label="Search everything" onClick={(e) => e.stopPropagation()}>
         {/* Search Input bar */}
         <div className="gsm-input-bar">
           <Search size={18} className="gsm-search-icon" />
@@ -274,7 +275,7 @@ export default function GlobalSearchModal() {
                       onClick={() => handleSelectUser(u.id)}
                     >
                       <div className="gsm-item-left">
-                        <Avatar name={u.name} size={28} />
+                        <Avatar userId={u.id} name={u.name} size={28} />
                         <div className="gsm-item-info">
                           <span className="gsm-item-name">{u.name}</span>
                           <span className="gsm-item-sub">
