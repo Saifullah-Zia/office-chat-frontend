@@ -23,7 +23,7 @@ import ActivityPanel, { ActivityTab } from "./ActivityPanel";
 import Avatar from "./Avatar";
 import ProfileEditModal from "./ProfileEditModal";
 import DirectoryModal from "./DirectoryModal";
-import AdminPanel from "./AdminPanel";
+import AdminPanel, { type AdminSection } from "./AdminPanel";
 import CreateGroupModal from "./CreateGroupModal";
 import SettingsModal from "./SettingsModal";
 import { useTheme } from "@/hooks/useTheme";
@@ -181,6 +181,58 @@ export default function Sidebar() {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showDirectory, setShowDirectory] = useState(false);
   const [isAdminOpen, setIsAdminOpen]         = useState(false);
+  const [adminSection, setAdminSection]       = useState<AdminSection>("users");
+  const [openReports, setOpenReports]         = useState(0);
+
+  const openAdmin = useCallback((section: AdminSection) => {
+    setAdminSection(section);
+    setIsAdminOpen(true);
+  }, []);
+
+  /* ── reports: admins get new-report alerts + badge; reporters hear back when it's reviewed ── */
+  useEffect(() => {
+    if (!userId) return;
+    if (userRole === "ADMIN") {
+      apiGet<{ open: number }>("/api/admin/reports/count").then((r) => setOpenReports(r.open)).catch(() => {});
+      // Link from the new-report email: /?open=reports
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("open") === "reports") {
+        // One-time deep link read from the URL (only known in the browser), then removed.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        openAdmin("reports");
+        params.delete("open");
+        const qs = params.toString();
+        window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+      }
+    }
+    let sub: { unsubscribe: () => void } | null = null;
+    (async () => {
+      try {
+        sub = await subscribe("/user/queue/reports", (frame) => {
+          const ev = JSON.parse(frame.body) as {
+            type: "NEW" | "COUNT" | "REVIEWED"; reportId: number; openCount?: number;
+            reporterName?: string; targetName?: string; reason?: string; status?: string; note?: string | null;
+          };
+          if (typeof ev.openCount === "number") setOpenReports(ev.openCount);
+          if (ev.type === "NEW") {
+            showToast(`🚩 New report: ${ev.reporterName} reported ${ev.targetName} (${ev.reason})`);
+            desktopNotify("🚩 New report", `${ev.reporterName} reported ${ev.targetName} (${ev.reason})`, {
+              tag: `report-${ev.reportId}`,
+              onClick: () => openAdmin("reports"),
+            });
+          } else if (ev.type === "REVIEWED") {
+            const outcome = ev.status === "RESOLVED" ? "reviewed and action was taken" : "reviewed and closed";
+            const text = `Your report about ${ev.targetName} was ${outcome}.${ev.note ? ` Admin's note: ${ev.note}` : ""}`;
+            showToast(`✅ ${text}`);
+            desktopNotify("✅ Report reviewed", text, { tag: `report-${ev.reportId}` });
+          }
+        });
+      } catch (err) {
+        console.error("Report subscription error:", err);
+      }
+    })();
+    return () => { sub?.unsubscribe(); };
+  }, [userId, userRole, openAdmin]);
 
   /* ── initial data ────────────────────────────────────────────────── */
   useEffect(() => {
@@ -482,8 +534,14 @@ export default function Sidebar() {
             {activityCount > 0 && <span className="sb-activity-badge">{activityCount > 99 ? "99+" : activityCount}</span>}
           </button>
           {userRole === "ADMIN" && (
-            <button className="sb-icon-btn" onClick={() => setIsAdminOpen(true)} title="Admin Panel (users, analytics, reports)" aria-label="Admin Panel">
+            <button
+              className="sb-icon-btn sb-activity-btn"
+              onClick={() => openAdmin(openReports > 0 ? "reports" : "users")}
+              title={openReports > 0 ? `Admin Panel: ${openReports} open report${openReports === 1 ? "" : "s"}` : "Admin Panel (users, analytics, reports)"}
+              aria-label={`Admin Panel${openReports > 0 ? ` (${openReports} open reports)` : ""}`}
+            >
               <Shield size={15} />
+              {openReports > 0 && <span className="sb-activity-badge">{openReports > 99 ? "99+" : openReports}</span>}
             </button>
           )}
 {userRole !== "PROVIDER" && (
@@ -832,6 +890,9 @@ export default function Sidebar() {
       {showDirectory && <DirectoryModal onClose={() => setShowDirectory(false)} onStartChat={handleStartDirect} />}
       <CreateGroupModal isOpen={isGroupOpen} onClose={() => setIsGroupOpen(false)} users={users.filter((u) => u.id !== userId)} onGroupCreated={handleGroupCreated} />
       <AdminPanel
+        // Remount on each open so it starts on the requested tab.
+        key={isAdminOpen ? `open-${adminSection}` : "closed"}
+        initialSection={adminSection}
         open={isAdminOpen}
         onClose={() => setIsAdminOpen(false)}
         onUsersChanged={() => apiGet<UserResponse[]>("/api/users").then(setUsers).catch(console.error)}

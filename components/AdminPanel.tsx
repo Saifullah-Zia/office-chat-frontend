@@ -19,15 +19,19 @@ interface AdminPanelProps {
   open: boolean;
   onClose: () => void;
   onUsersChanged: () => void;
+  /** Tab shown when the panel opens (e.g. "reports" from a new-report alert). */
+  initialSection?: AdminSection;
 }
 
-export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanelProps) {
+export type AdminSection = "users" | "analytics" | "reports" | "audit" | "policies";
+
+export default function AdminPanel({ open, onClose, onUsersChanged, initialSection = "users" }: AdminPanelProps) {
   const [allUsers, setAllUsers] = useState<UserResponse[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [filter, setFilter] = useState<"all" | "active" | "inactive">("all");
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
-  const [section, setSection] = useState<"users" | "analytics" | "reports" | "audit" | "policies">("users");
+  const [section, setSection] = useState<AdminSection>(initialSection);
   const [openReports, setOpenReports] = useState(0);
 
   useEffect(() => {
