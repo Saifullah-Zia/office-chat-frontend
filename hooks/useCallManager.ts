@@ -28,6 +28,31 @@ async function getAgoraRTC() {
   return AgoraRTC;
 }
 
+/** Turn a failed call setup into a message that says what's wrong and what to do. */
+function describeCallError(err: unknown): string {
+  const e = err as { code?: string; name?: string; message?: string; response?: { status?: number } } | null;
+  const status = e?.response?.status;
+  const code = String(e?.code ?? "");
+  const name = String(e?.name ?? "");
+  const msg = String(e?.message ?? "");
+  if (status === 403) return "You can't call in this chat.";
+  if ((status ?? 0) >= 500 || code === "ERR_NETWORK") {
+    return "The chat server isn't responding right now. Wait a minute and try again.";
+  }
+  if (code === "PERMISSION_DENIED" || name === "NotAllowedError" || /permission denied|not allowed/i.test(msg)) {
+    return "Microphone/camera access is blocked for this site. Tap the icon left of the address bar → Permissions → allow Microphone (and Camera), then try again.";
+  }
+  if (code === "NOT_READABLE" || name === "NotReadableError") {
+    return "Your microphone or camera is in use by another app (or another call). Close it and try again.";
+  }
+  if (code === "DEVICE_NOT_FOUND" || name === "NotFoundError") return "No microphone or camera was found on this device.";
+  if (/App ID/i.test(msg)) return msg;
+  if (/token|dynamic key|vendor key|CAN_NOT_GET_GATEWAY_SERVER|INVALID_PARAMS/i.test(code + " " + msg)) {
+    return "The call service refused the connection. The Agora App ID or certificate in Railway/Vercel doesn't match. Ask your admin to check them.";
+  }
+  return `Couldn't connect the call.${msg ? ` (${code ? code + ": " : ""}${msg})` : ""}`;
+}
+
 // Web Audio API Ringtone Generator
 function startRingtone(): () => void {
   let audioCtx: AudioContext | null = null;
@@ -622,7 +647,7 @@ export function useCallManager(myUserId: number | null) {
       await sendSignal(remoteUserId, { type: "OFFER", conversationId, sdp: channelName, callType: type, callId });
     } catch (err) {
       console.error("Failed to initiate call with Agora:", err);
-      alert(err instanceof Error && err.message.includes("App ID") ? err.message : "Could not access camera/microphone or connect to the call service.");
+      alert(describeCallError(err));
       hangup();
     }
   }, [myUserId, joinChannel, hangup, sendSignal]);
@@ -662,7 +687,7 @@ export function useCallManager(myUserId: number | null) {
       ));
     } catch (err) {
       console.error("Failed to start group call:", err);
-      alert("Could not access camera/microphone or connect to the call service.");
+      alert(describeCallError(err));
       hangup();
     }
   }, [myUserId, joinChannel, hangup, sendSignal, stopRingtone, startPresence]);
@@ -700,6 +725,7 @@ export function useCallManager(myUserId: number | null) {
       });
     } catch (err) {
       console.error("Failed to accept call with Agora:", err);
+      alert(describeCallError(err));
       hangup();
     }
   }, [myUserId, joinChannel, hangup, sendSignal, stopRingtone, startPresence]);
@@ -718,7 +744,7 @@ export function useCallManager(myUserId: number | null) {
       startPresence(callId);
     } catch (err) {
       console.error("Failed to join the call:", err);
-      alert("Could not access camera/microphone or connect to the call service.");
+      alert(describeCallError(err));
       hangup();
     }
   }, [myUserId, joinChannel, startPresence, hangup]);
