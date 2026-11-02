@@ -136,6 +136,13 @@ export function useCallManager(myUserId: number | null) {
   // Bumped on every hangup. Setup steps that are still awaiting (joining, opening the mic, attaching
   // effects) compare against it and close what they opened instead of leaving the mic on.
   const callEpochRef = useRef(0);
+  // True while a call is being started/accepted: a second tap (double-tap on Accept) is ignored
+  // instead of joining twice and opening a second microphone that hangup never sees.
+  const startingRef = useRef(false);
+  // Every mic/camera track and call connection opened since the last hangup, so hangup can
+  // close all of them even if a ref was overwritten.
+  const openedTracksRef = useRef<Set<{ close: () => void }>>(new Set());
+  const openedClientsRef = useRef<Set<IAgoraRTCClient>>(new Set());
   const badStreakRef = useRef(0);
   const screenClientRef = useRef<IAgoraRTCClient | null>(null);
   const [isMuted, setIsMuted] = useState(false);
@@ -330,12 +337,18 @@ export function useCallManager(myUserId: number | null) {
     setConnectionUnstable(false);
     badStreakRef.current = 0;
 
+    // Anything else opened during this call (e.g. a duplicate join) is closed too: no mic left on.
+    openedTracksRef.current.forEach((t) => { try { t.close(); } catch {} });
+    openedTracksRef.current.clear();
+
     // Leave Agora RTC channel
     if (agoraClientRef.current) {
       agoraClientRef.current.removeAllListeners();
       agoraClientRef.current.leave().catch(() => {});
       agoraClientRef.current = null;
     }
+    openedClientsRef.current.forEach((c) => { c.removeAllListeners(); c.leave().catch(() => {}); });
+    openedClientsRef.current.clear();
 
     groupInviteesRef.current = [];
     activeCallRef.current = null;
@@ -474,6 +487,7 @@ export function useCallManager(myUserId: number | null) {
 
     const client = await setupAgoraClient();
     if (!client) throw new Error("Agora unavailable");
+    openedClientsRef.current.add(client);
     await client.join(effectiveAppId, channelName, token || null, myUserId);
     if (ended()) { client.leave().catch(() => {}); return false; }
 
@@ -503,13 +517,17 @@ export function useCallManager(myUserId: number | null) {
       AGC: true,
       microphoneId,
     }), prefs.mic);
+    openedTracksRef.current.add(audioTrack);
     if (ended()) { audioTrack.close(); client.leave().catch(() => {}); return false; }
+    localAudioTrackRef.current?.close(); // never leave an earlier mic running underneath
     localAudioTrackRef.current = audioTrack;
 
     const tracks: (IMicrophoneAudioTrack | ICameraVideoTrack)[] = [audioTrack];
     if (type === "VIDEO") {
       const videoTrack = await withFallback((cameraId) => AgoraRTC.createCameraVideoTrack({ cameraId }), prefs.camera);
+      openedTracksRef.current.add(videoTrack);
       if (ended()) { videoTrack.close(); audioTrack.close(); client.leave().catch(() => {}); return false; }
+      localVideoTrackRef.current?.close();
       localVideoTrackRef.current = videoTrack;
       tracks.push(videoTrack);
       setLocalStream(new MediaStream([videoTrack.getMediaStreamTrack()]));
@@ -638,7 +656,8 @@ export function useCallManager(myUserId: number | null) {
     remoteUserName: string,
     type: CallType
   ) => {
-    if (!myUserId || activeCallRef.current) return;
+    if (!myUserId || activeCallRef.current || startingRef.current) return;
+    startingRef.current = true;
     const channelName = `call_conv_${conversationId}`;
 
     try {
@@ -662,6 +681,8 @@ export function useCallManager(myUserId: number | null) {
       console.error("Failed to initiate call with Agora:", err);
       alert(describeCallError(err));
       hangup();
+    } finally {
+      startingRef.current = false;
     }
   }, [myUserId, joinChannel, hangup, sendSignal]);
 
@@ -672,7 +693,8 @@ export function useCallManager(myUserId: number | null) {
     memberIds: number[],
     type: CallType
   ) => {
-    if (!myUserId || activeCallRef.current) return;
+    if (!myUserId || activeCallRef.current || startingRef.current) return;
+    startingRef.current = true;
     const channelName = `call_conv_${conversationId}`;
 
     try {
@@ -702,12 +724,16 @@ export function useCallManager(myUserId: number | null) {
       console.error("Failed to start group call:", err);
       alert(describeCallError(err));
       hangup();
+    } finally {
+      startingRef.current = false;
     }
   }, [myUserId, joinChannel, hangup, sendSignal, stopRingtone, startPresence]);
 
   // Accept incoming call (1:1 or group)
   const acceptCall = useCallback(async (signal: CallSignal, callType: CallType) => {
-    if (!myUserId) return;
+    // Ignore a second tap on Accept (or accepting while already in a call).
+    if (!myUserId || activeCallRef.current || startingRef.current) return;
+    startingRef.current = true;
     stopRingtone();
     clearRingTimeout();
 
@@ -740,12 +766,15 @@ export function useCallManager(myUserId: number | null) {
       console.error("Failed to accept call with Agora:", err);
       alert(describeCallError(err));
       hangup();
+    } finally {
+      startingRef.current = false;
     }
   }, [myUserId, joinChannel, hangup, sendSignal, stopRingtone, startPresence]);
 
   // Join a group call that's already running (missed the ring, or rejoining after a drop).
   const joinOngoingCall = useCallback(async (conversationId: number, callId: number, callType: CallType, groupName: string) => {
-    if (!myUserId || activeCallRef.current) return;
+    if (!myUserId || activeCallRef.current || startingRef.current) return;
+    startingRef.current = true;
     const call: ActiveCall = {
       conversationId, remoteUserId: 0, remoteUserName: groupName, callType,
       isInitiator: false, connectionState: "connecting", durationSecs: 0, isGroup: true, callId,
@@ -759,6 +788,8 @@ export function useCallManager(myUserId: number | null) {
       console.error("Failed to join the call:", err);
       alert(describeCallError(err));
       hangup();
+    } finally {
+      startingRef.current = false;
     }
   }, [myUserId, joinChannel, startPresence, hangup]);
 
