@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import InstallPrompt from "@/components/InstallPrompt";
 
 export const metadata: Metadata = {
   title: "Office Chat",
@@ -50,12 +51,17 @@ export default function RootLayout({
                   var wallpaper = localStorage.getItem('office-chat-wallpaper');
                   if (wallpaper) document.documentElement.setAttribute('data-wallpaper', wallpaper);
                 } catch(e) {}
+                // Keep Chrome's install event if it fires before the app loads (see InstallPrompt).
+                window.addEventListener('beforeinstallprompt', function(e) { e.preventDefault(); window.__installPrompt = e; });
               })();
             `,
           }}
         />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        <InstallPrompt />
+      </body>
     </html>
   );
 }
