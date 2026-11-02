@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Play, Pause, Loader2, AlertCircle, Mic } from "lucide-react";
 import { getToken } from "@/lib/auth";
+import { API_BASE } from "@/lib/config";
 
 interface AudioPlayerProps {
   src: string;
@@ -17,9 +18,8 @@ const SPEEDS = [1, 1.5, 2] as const;
 function buildAudioUrl(src: string): string {
   if (src.startsWith("http")) return src;
 
-  const base = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080").replace(/\/+$/, "");
   const path = src.startsWith("/") ? src : `/${src}`;
-  return `${base}${path}`;
+  return `${API_BASE}${path}`;
 }
 
 // ── Audio Cache ──────────────────────────────────────────────────────

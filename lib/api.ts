@@ -1,8 +1,9 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
 import { getToken, clearAuth } from "@/lib/auth";
 import { showToast } from "@/lib/toast";
+import { API_BASE } from "@/lib/config";
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+const BASE_URL = API_BASE;
 
 export const api = axios.create({
   baseURL: BASE_URL,

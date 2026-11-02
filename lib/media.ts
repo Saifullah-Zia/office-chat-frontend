@@ -1,4 +1,5 @@
 import { AttachmentResponse } from "@/types";
+import { API_BASE } from "@/lib/config";
 
 /**
  * Raster images the server serves inline. SVG is excluded: it can carry script, so the
@@ -39,7 +40,6 @@ export async function saveFile(url: string, name: string): Promise<void> {
   }
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
 /** Server paths like "/api/files/1/download" become full URLs on the API origin. */
 export function apiUrl(url: string): string {

@@ -154,7 +154,6 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread, 
 
   // Open the lightbox with every image in this chat, starting at the clicked one.
   const openImageViewer = (attachmentId: number) => {
-    const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
     const convMessages = useStore.getState().messagesByConv[message.conversationId] ?? [message];
     const images: ViewerImage[] = [];
     convMessages.forEach((m) => {
@@ -163,7 +162,7 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread, 
         if (!isViewableImage(a)) return;
         images.push({
           id: a.id,
-          url: a.downloadUrl.startsWith("http") ? a.downloadUrl : `${API}${a.downloadUrl}`,
+          url: apiUrl(a.downloadUrl),
           name: a.filename ?? a.fileName ?? a.originalName ?? "Image",
           sender: m.senderName,
           createdAt: m.createdAt,
