@@ -106,4 +106,5 @@ export const Topics = {
 export const Destinations = {
   typing: () => `/app/chat.typing`,
   callSignal: () => `/app/call.signal`,
+  callHand: () => `/app/call.hand`,
 };

@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { X, Settings, Sun, Moon, Bell, Keyboard, Type, Image as ImageIcon, Volume2, Shield, Smartphone, Zap } from "lucide-react";
+import { X, Settings, Sun, Moon, Bell, Keyboard, Type, Image as ImageIcon, Volume2, Shield, Smartphone, Zap, Headphones } from "lucide-react";
+import DeviceSettings from "./DeviceSettings";
+import { CallEffectPrefs, getEffectPrefs, setEffectPref } from "@/lib/callEffects";
 import QuickRepliesModal from "./QuickRepliesModal";
 import { currentSubscription, disablePush, enablePush, pushSupported } from "@/lib/push";
 import { showToast } from "@/lib/toast";
@@ -90,6 +92,8 @@ export default function SettingsModal({ onClose, theme, setTheme }: SettingsModa
   };
 
   const [quickRepliesOpen, setQuickRepliesOpen] = useState(false);
+  const [testingDevices, setTestingDevices] = useState(false);
+  const [fx, setFx] = useState<CallEffectPrefs>(getEffectPrefs);
   const [pushOn, setPushOn] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
   useEffect(() => {
@@ -197,6 +201,26 @@ export default function SettingsModal({ onClose, theme, setTheme }: SettingsModa
                 <span><Smartphone size={15} /> Notify me when the app is closed</span>
                 <input type="checkbox" checked={pushOn} disabled={pushBusy} onChange={(e) => togglePush(e.target.checked)} />
               </label>
+            )}
+          </section>
+
+          <section className="stm-section">
+            <h4><Headphones size={14} /> Calls &amp; devices</h4>
+            <label className="stm-row">
+              <span>AI noise suppression</span>
+              <input type="checkbox" checked={fx.noise} onChange={(e) => { setEffectPref("noise", e.target.checked); setFx(getEffectPrefs()); }} />
+            </label>
+            <label className="stm-row">
+              <span>Blur my background on video calls</span>
+              <input type="checkbox" checked={fx.blur} onChange={(e) => { setEffectPref("blur", e.target.checked); setFx(getEffectPrefs()); }} />
+            </label>
+            {testingDevices ? (
+              <DeviceSettings test />
+            ) : (
+              <div className="stm-row">
+                <span>Choose your microphone, camera and speaker, and test them</span>
+                <button type="button" className="stm-btn" onClick={() => setTestingDevices(true)}>Set up</button>
+              </div>
             )}
           </section>
 

@@ -85,24 +85,38 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
     incomingSignal,
     localStream,
     participants,
+    screenShares,
+    networkQuality,
+    connectionUnstable,
+    noiseSuppression,
+    backgroundBlur,
+    setNoiseSuppression,
+    setBackgroundBlur,
+    raisedHands,
+    toggleHand,
     isMuted,
     isCamOff,
     isScreenSharing,
     initiateCall,
     initiateGroupCall,
+    joinOngoingCall,
     acceptCall,
     rejectCall,
     hangup,
     toggleMute,
     toggleCamera,
     toggleScreenShare,
+    switchDevice,
   } = useCallManager(userId);
 
   // Don't render until we've verified auth
   if (!ready) return null;
 
   return (
-    <CallContext.Provider value={{ initiateCall, initiateGroupCall, inCall: !!activeCall }}>
+    <CallContext.Provider value={{
+      initiateCall, initiateGroupCall, joinOngoingCall,
+      inCall: !!activeCall, activeCallConversationId: activeCall?.conversationId ?? null,
+    }}>
       <div className={`chat-layout-shell ${activeConversationId || pathname.startsWith("/join") ? "chat-layout-shell--chat-open" : ""}`}>
         <Sidebar />
         <main className="chat-layout-main">{children}</main>
@@ -124,6 +138,16 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
             activeCall={activeCall}
             localStream={localStream}
             participants={participants}
+            screenShares={screenShares}
+            networkQuality={networkQuality}
+            connectionUnstable={connectionUnstable}
+            noiseSuppression={noiseSuppression}
+            backgroundBlur={backgroundBlur}
+            onSetNoiseSuppression={setNoiseSuppression}
+            onSetBackgroundBlur={setBackgroundBlur}
+            myUserId={userId}
+            raisedHands={raisedHands}
+            onToggleHand={toggleHand}
             isMuted={isMuted}
             isCamOff={isCamOff}
             isScreenSharing={isScreenSharing}
@@ -132,6 +156,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
             onToggleCamera={toggleCamera}
             onToggleScreenShare={toggleScreenShare}
             onHangup={hangup}
+            onSwitchDevice={switchDevice}
           />
         )}
 

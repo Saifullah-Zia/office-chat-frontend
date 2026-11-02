@@ -90,7 +90,8 @@ export interface ConversationResponse {
   inviteCode?: string | null;
 }
 
-export type MessageType = "TEXT" | "IMAGE" | "FILE" | "VOICE" | "AUDIO" | "POLL";
+/** CALL = call log entry posted by the server ("Missed voice call", "Video call · 4m 12s") */
+export type MessageType = "TEXT" | "IMAGE" | "FILE" | "VOICE" | "AUDIO" | "POLL" | "CALL";
 
 export interface PollOptionResponse {
   id: number;

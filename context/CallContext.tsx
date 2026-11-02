@@ -17,7 +17,11 @@ interface CallContextType {
     memberIds: number[],
     type: CallType
   ) => void;
+  /** Join a group call that's already running in a chat. */
+  joinOngoingCall: (conversationId: number, callId: number, type: CallType, groupName: string) => void;
   inCall: boolean;
+  /** The chat I'm currently in a call for, if any. */
+  activeCallConversationId: number | null;
 }
 
 export const CallContext = createContext<CallContextType | null>(null);

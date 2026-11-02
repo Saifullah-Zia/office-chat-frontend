@@ -271,6 +271,26 @@ export default function MessageBubble({ message, isMine, onReply, onOpenThread, 
     }
   };
 
+  // Call log entries: a small centred note, not a bubble (no reactions, edit or menu).
+  if (message.type === "CALL") {
+    const missed = /Missed|Declined/.test(message.content);
+    return (
+      <div className={`mb-call-event ${missed ? "mb-call-event--missed" : ""}`} role="note">
+        <span>{message.content}</span>
+        <time dateTime={message.createdAt}>{timeStr}</time>
+        <style>{`
+          .mb-call-event {
+            align-self: center; display: inline-flex; align-items: center; gap: 0.5rem; margin: 0.35rem auto;
+            padding: 0.35rem 0.85rem; border-radius: 999px; background: var(--bg-tertiary); color: var(--text-secondary);
+            font-size: 0.8rem; font-weight: 600;
+          }
+          .mb-call-event--missed { color: var(--danger); background: var(--danger-soft); }
+          .mb-call-event time { font-weight: 400; font-size: 0.7rem; opacity: 0.75; }
+        `}</style>
+      </div>
+    );
+  }
+
   return (
     <div className={`mb-container ${isMine ? "mb-container--mine" : "mb-container--theirs"}`}>
       {/* Sender Avatar */}

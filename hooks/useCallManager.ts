@@ -8,9 +8,15 @@ import type {
   ICameraVideoTrack,
   ILocalVideoTrack,
 } from "agora-rtc-sdk-ng";
-import { apiGet, apiPost } from "@/lib/api";
+import { apiDelete, apiGet, apiPost } from "@/lib/api";
+import { showToast } from "@/lib/toast";
+import { desktopNotify } from "@/lib/notify";
+import { DeviceKind, canChooseSpeaker, getPreferredDevices, setPreferredDevice } from "@/lib/devices";
+import { getEffectPrefs, loadCallEffects, setEffectPref } from "@/lib/callEffects";
+import type { IAIDenoiserProcessor } from "agora-extension-ai-denoiser";
+import type { IVirtualBackgroundProcessor } from "agora-extension-virtual-background";
 import { subscribe, publish, Topics, Destinations } from "@/lib/socket";
-import { ActiveCall, CallParticipant, CallSignal, CallType } from "@/types/call";
+import { ActiveCall, CallParticipant, CallSignal, CallType, SCREEN_UID_OFFSET, ScreenShare, NetworkQuality } from "@/types/call";
 import { useStore } from "@/lib/store";
 
 // Safely load AgoraRTC dynamic import on client-side only (prevents SSR 500 error in Next.js)
@@ -91,6 +97,19 @@ export function useCallManager(myUserId: number | null) {
   const [incomingSignal, setIncomingSignal] = useState<CallSignal | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [participants, setParticipants] = useState<CallParticipant[]>([]);
+  /** Other people's shared screens (newest last). */
+  const [screenShares, setScreenShares] = useState<ScreenShare[]>([]);
+  const [networkQuality, setNetworkQuality] = useState<NetworkQuality>({ me: 0 });
+  const [connectionUnstable, setConnectionUnstable] = useState(false);
+  /** Raised hands in the current call, by user id (mine included). */
+  const [raisedHands, setRaisedHands] = useState<Set<number>>(new Set());
+  // Effects: AI noise suppression (mic) and background blur (camera).
+  const [noiseSuppression, setNoiseSuppressionState] = useState(false);
+  const [backgroundBlur, setBackgroundBlurState] = useState(false);
+  const denoiseProcRef = useRef<IAIDenoiserProcessor | null>(null);
+  const blurProcRef = useRef<IVirtualBackgroundProcessor | null>(null);
+  const badStreakRef = useRef(0);
+  const screenClientRef = useRef<IAgoraRTCClient | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isCamOff, setIsCamOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -148,6 +167,77 @@ export function useCallManager(myUserId: number | null) {
     }, 1000);
   };
 
+  // Group calls: tell the server I'm in (and keep telling it) so others can see the call and join late.
+  const presenceRef = useRef<{ callId: number; timer: ReturnType<typeof setInterval> } | null>(null);
+  const startPresence = useCallback((callId: number) => {
+    if (presenceRef.current) return;
+    const checkIn = () => apiPost(`/api/calls/${callId}/presence`).catch(() => {});
+    checkIn();
+    presenceRef.current = { callId, timer: setInterval(checkIn, 60_000) };
+  }, []);
+  const stopPresence = useCallback(() => {
+    const p = presenceRef.current;
+    if (!p) return;
+    clearInterval(p.timer);
+    presenceRef.current = null;
+    apiDelete(`/api/calls/${p.callId}/presence`).catch(() => {});
+  }, []);
+
+  /** Turn AI noise suppression on/off for my mic. Returns whether it's now on. */
+  const applyNoiseSuppression = useCallback(async (on: boolean) => {
+    const track = localAudioTrackRef.current;
+    const AgoraRTC = await getAgoraRTC();
+    if (!track || !AgoraRTC) return false;
+    try {
+      if (!denoiseProcRef.current) {
+        if (!on) return false;
+        const { denoiser } = await loadCallEffects(AgoraRTC);
+        if (!denoiser) return false;
+        const proc = denoiser.createProcessor();
+        // If the processor fails mid-call, fall back to the plain mic instead of going silent.
+        proc.on("pipeerror", () => {
+          proc.unpipe();
+          track.unpipe();
+          track.pipe(track.processorDestination);
+          denoiseProcRef.current = null;
+          setNoiseSuppressionState(false);
+        });
+        track.pipe(proc).pipe(track.processorDestination);
+        denoiseProcRef.current = proc;
+      }
+      if (on) await denoiseProcRef.current.enable(); else await denoiseProcRef.current.disable();
+      return on;
+    } catch (err) {
+      console.warn("Noise suppression failed:", err);
+      return false;
+    }
+  }, []);
+
+  /** Turn background blur on/off for my camera. Returns whether it's now on. */
+  const applyBackgroundBlur = useCallback(async (on: boolean) => {
+    const track = localVideoTrackRef.current;
+    const AgoraRTC = await getAgoraRTC();
+    if (!track || !AgoraRTC) return false;
+    try {
+      if (!blurProcRef.current) {
+        if (!on) return false;
+        const { blur } = await loadCallEffects(AgoraRTC);
+        if (!blur) return false;
+        const proc = blur.createProcessor();
+        await proc.init();
+        proc.setOptions({ type: "blur", blurDegree: 2 });
+        track.pipe(proc).pipe(track.processorDestination);
+        blurProcRef.current = proc;
+      }
+      if (on) await blurProcRef.current.enable(); else await blurProcRef.current.disable();
+      setLocalStream(new MediaStream([track.getMediaStreamTrack()]));
+      return on;
+    } catch (err) {
+      console.warn("Background blur failed:", err);
+      return false;
+    }
+  }, []);
+
   // Clean up call state completely
   const hangup = useCallback(() => {
     stopRingtone();
@@ -168,11 +258,22 @@ export function useCallManager(myUserId: number | null) {
           sendSignal(uid, { type: "HANGUP", conversationId: call.conversationId, callId: call.callId, isGroup: true })
         );
       }
-      // Close the call record (marks MISSED if nobody ever answered).
-      if (call.callId && (!call.isGroup || call.isInitiator)) {
+      // 1:1: close the call record (MISSED if never answered). Group: the server closes it when the last person leaves.
+      if (call.callId && !call.isGroup) {
         apiPost(`/api/calls/${call.callId}/end`).catch(() => {});
       }
+      if (call.isGroup) stopPresence();
     }
+
+    // Release effect processors, then close local tracks
+    denoiseProcRef.current?.unpipe();
+    denoiseProcRef.current?.destroy().catch(() => {});
+    denoiseProcRef.current = null;
+    blurProcRef.current?.unpipe();
+    blurProcRef.current?.release().catch(() => {});
+    blurProcRef.current = null;
+    setNoiseSuppressionState(false);
+    setBackgroundBlurState(false);
 
     // Unpublish and close local Agora tracks
     localAudioTrackRef.current?.close();
@@ -181,6 +282,14 @@ export function useCallManager(myUserId: number | null) {
     localVideoTrackRef.current = null;
     screenTrackRef.current?.close();
     screenTrackRef.current = null;
+    screenClientRef.current?.leave().catch(() => {});
+    screenClientRef.current = null;
+    setScreenShares([]);
+    setNetworkQuality({ me: 0 });
+    if (call && myUserId) publish(Destinations.callHand(), { conversationId: call.conversationId, raised: false }).catch(() => {});
+    setRaisedHands(new Set());
+    setConnectionUnstable(false);
+    badStreakRef.current = 0;
 
     // Leave Agora RTC channel
     if (agoraClientRef.current) {
@@ -198,7 +307,7 @@ export function useCallManager(myUserId: number | null) {
     setIsMuted(false);
     setIsCamOff(false);
     setIsScreenSharing(false);
-  }, [myUserId, sendSignal, stopRingtone]);
+  }, [myUserId, sendSignal, stopRingtone, stopPresence]);
 
   // Rebuild one participant's render streams from their current Agora tracks.
   const upsertParticipant = useCallback((user: IAgoraRTCRemoteUser) => {
@@ -210,6 +319,8 @@ export function useCallManager(myUserId: number | null) {
       name: nameForUid(uid),
       videoStream: videoTrack ? new MediaStream([videoTrack]) : null,
       audioStream: audioTrack ? new MediaStream([audioTrack]) : null,
+      micOn: !!user.hasAudio,
+      camOn: !!user.hasVideo,
     };
     setParticipants((prev) => {
       const others = prev.filter((p) => p.uid !== uid);
@@ -224,7 +335,12 @@ export function useCallManager(myUserId: number | null) {
 
     const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
 
+    const isScreen = (uid: number) => uid >= SCREEN_UID_OFFSET;
+    const removeShare = (uid: number) =>
+      setScreenShares((prev) => prev.filter((s) => s.ownerUid !== uid - SCREEN_UID_OFFSET));
+
     client.on("user-joined", (user) => {
+      if (isScreen(Number(user.uid))) return; // someone's screen share, not a person
       // Someone answered: stop ringing and start the clock even before they publish media.
       stopRingtone();
       clearRingTimeout();
@@ -234,9 +350,29 @@ export function useCallManager(myUserId: number | null) {
     });
 
     client.on("user-published", async (user, mediaType) => {
+      const uid = Number(user.uid);
+      if (isScreen(uid)) {
+        const ownerUid = uid - SCREEN_UID_OFFSET;
+        // My own share is shown locally; don't download it back.
+        if (ownerUid === useStore.getState().userId || mediaType !== "video") return;
+        try {
+          await client.subscribe(user, "video");
+          const track = user.videoTrack?.getMediaStreamTrack();
+          if (!track) return;
+          const share: ScreenShare = { ownerUid, name: nameForUid(ownerUid), stream: new MediaStream([track]) };
+          setScreenShares((prev) => [...prev.filter((s) => s.ownerUid !== ownerUid), share]);
+        } catch (err) {
+          console.warn("Couldn't show the shared screen:", err);
+        }
+        return;
+      }
       try {
         await client.subscribe(user, mediaType);
-        if (mediaType === "audio") user.audioTrack?.play();
+        if (mediaType === "audio") {
+          user.audioTrack?.play();
+          const speaker = getPreferredDevices().speaker;
+          if (speaker && canChooseSpeaker()) user.audioTrack?.setPlaybackDevice(speaker).catch(() => {});
+        }
         upsertParticipant(user);
         stopRingtone();
         clearRingTimeout();
@@ -248,14 +384,30 @@ export function useCallManager(myUserId: number | null) {
     });
 
     client.on("user-unpublished", (user) => {
+      if (isScreen(Number(user.uid))) { removeShare(Number(user.uid)); return; }
       upsertParticipant(user);
     });
 
     client.on("user-left", (user) => {
       const uid = Number(user.uid);
+      // A screen share ending is not the person leaving (would otherwise end 1:1 calls).
+      if (isScreen(uid)) { removeShare(uid); return; }
+      setRaisedHands((prev) => { if (!prev.has(uid)) return prev; const n = new Set(prev); n.delete(uid); return n; });
       setParticipants((prev) => prev.filter((p) => p.uid !== uid));
       // A 1:1 call ends when the other person leaves; a group call keeps going.
       if (!activeCallRef.current?.isGroup) hangup();
+    });
+
+    // Every ~2s: my uplink/downlink and everyone else's (shown as signal bars).
+    client.on("network-quality", (q) => {
+      const next: NetworkQuality = { me: Math.max(q.uplinkNetworkQuality, q.downlinkNetworkQuality) };
+      Object.entries(client.getRemoteNetworkQuality()).forEach(([uid, r]) => {
+        if (Number(uid) < SCREEN_UID_OFFSET) next[Number(uid)] = Math.max(r.uplinkNetworkQuality, r.downlinkNetworkQuality);
+      });
+      setNetworkQuality(next);
+      // Warn only after two bad readings in a row (~4s), and clear on the first good one.
+      badStreakRef.current = next.me >= 4 ? badStreakRef.current + 1 : 0;
+      setConnectionUnstable(badStreakRef.current >= 2);
     });
 
     client.on("connection-state-change", (state) => {
@@ -294,18 +446,25 @@ export function useCallManager(myUserId: number | null) {
     client.on("token-privilege-will-expire", renewToken);
     client.on("token-privilege-did-expire", renewToken);
 
+    // Preferred devices; if one was unplugged since, fall back to the system default.
+    const prefs = getPreferredDevices();
+    const withFallback = async <T,>(make: (id?: string) => Promise<T>, id?: string) => {
+      try { return await make(id); } catch (err) { if (!id) throw err; return make(undefined); }
+    };
+
     // Audio with native noise suppression / echo cancellation
-    const audioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+    const audioTrack = await withFallback((microphoneId) => AgoraRTC.createMicrophoneAudioTrack({
       encoderConfig: "speech_standard",
       AEC: true,
       ANS: true,
       AGC: true,
-    });
+      microphoneId,
+    }), prefs.mic);
     localAudioTrackRef.current = audioTrack;
 
     const tracks: (IMicrophoneAudioTrack | ICameraVideoTrack)[] = [audioTrack];
     if (type === "VIDEO") {
-      const videoTrack = await AgoraRTC.createCameraVideoTrack();
+      const videoTrack = await withFallback((cameraId) => AgoraRTC.createCameraVideoTrack({ cameraId }), prefs.camera);
       localVideoTrackRef.current = videoTrack;
       tracks.push(videoTrack);
       setLocalStream(new MediaStream([videoTrack.getMediaStreamTrack()]));
@@ -313,7 +472,48 @@ export function useCallManager(myUserId: number | null) {
       setLocalStream(null);
     }
     await client.publish(tracks);
-  }, [myUserId, setupAgoraClient]);
+
+    // Effects from my saved preferences; failures just leave the plain mic/camera.
+    const fx = getEffectPrefs();
+    applyNoiseSuppression(fx.noise).then(setNoiseSuppressionState);
+    if (type === "VIDEO" && fx.blur) applyBackgroundBlur(true).then(setBackgroundBlurState);
+  }, [myUserId, setupAgoraClient, applyNoiseSuppression, applyBackgroundBlur]);
+
+  // Raised hands for the call I'm in (members-only topic; the server stamps who raised it).
+  const callConversationId = activeCall?.conversationId ?? null;
+  useEffect(() => {
+    if (callConversationId === null) return;
+    let sub: { unsubscribe: () => void } | null = null;
+    let alive = true;
+    subscribe(`/topic/conversation.${callConversationId}.hand`, (frame) => {
+      const ev = JSON.parse(frame.body) as { userId: number; name: string; raised: boolean };
+      setRaisedHands((prev) => {
+        const n = new Set(prev);
+        if (ev.raised) n.add(ev.userId); else n.delete(ev.userId);
+        return n;
+      });
+      if (ev.raised && ev.userId !== myUserId) showToast(`✋ ${ev.name} raised their hand`);
+    }).then((s) => { if (alive) sub = s; else s.unsubscribe(); }).catch(() => {});
+    return () => { alive = false; sub?.unsubscribe(); };
+  }, [callConversationId, myUserId]);
+
+  const toggleHand = useCallback(() => {
+    const call = activeCallRef.current;
+    if (!call || !myUserId) return;
+    const raised = !raisedHands.has(myUserId);
+    setRaisedHands((prev) => { const n = new Set(prev); if (raised) n.add(myUserId); else n.delete(myUserId); return n; });
+    publish(Destinations.callHand(), { conversationId: call.conversationId, raised }).catch(() => {});
+  }, [myUserId, raisedHands]);
+
+  /** In-call toggles; the choice is remembered for next time. */
+  const setNoiseSuppression = useCallback(async (on: boolean) => {
+    setEffectPref("noise", on);
+    setNoiseSuppressionState(await applyNoiseSuppression(on));
+  }, [applyNoiseSuppression]);
+  const setBackgroundBlur = useCallback(async (on: boolean) => {
+    setEffectPref("blur", on);
+    setBackgroundBlurState(await applyBackgroundBlur(on));
+  }, [applyBackgroundBlur]);
 
   // Handle WebSocket call signaling
   useEffect(() => {
@@ -333,6 +533,12 @@ export function useCallManager(myUserId: number | null) {
               return;
             }
             setIncomingSignal(signal);
+            // Tab in the background: also show a desktop notification (respects Do Not Disturb).
+            desktopNotify(
+              signal.callType === "VIDEO" ? "🎥 Incoming video call" : "📞 Incoming voice call",
+              signal.isGroup ? `${signal.fromUserName} started a call in ${signal.groupName ?? "a group"}` : `${signal.fromUserName} is calling you`,
+              { tag: `call-${signal.conversationId}` },
+            );
             ringtoneStopRef.current = startRingtone();
             clearRingTimeout();
             timeoutRef.current = setTimeout(() => {
@@ -432,6 +638,7 @@ export function useCallManager(myUserId: number | null) {
       setActiveCall(call);
 
       await joinChannel(channelName, type);
+      if (callId) startPresence(callId);
       groupInviteesRef.current = memberIds.filter((id) => id !== myUserId);
       ringtoneStopRef.current = startRingtone();
       timeoutRef.current = setTimeout(() => {
@@ -449,7 +656,7 @@ export function useCallManager(myUserId: number | null) {
       alert("Could not access camera/microphone or connect to the call service.");
       hangup();
     }
-  }, [myUserId, joinChannel, hangup, sendSignal, stopRingtone]);
+  }, [myUserId, joinChannel, hangup, sendSignal, stopRingtone, startPresence]);
 
   // Accept incoming call (1:1 or group)
   const acceptCall = useCallback(async (signal: CallSignal, callType: CallType) => {
@@ -478,6 +685,7 @@ export function useCallManager(myUserId: number | null) {
 
       await joinChannel(channelName, callType);
       if (signal.callId) apiPost(`/api/calls/${signal.callId}/accept`).catch(() => {});
+      if (signal.isGroup && signal.callId) startPresence(signal.callId);
       await sendSignal(signal.fromUserId, {
         type: "ANSWER", conversationId: signal.conversationId, sdp: channelName, callId: signal.callId, isGroup: signal.isGroup,
       });
@@ -485,7 +693,26 @@ export function useCallManager(myUserId: number | null) {
       console.error("Failed to accept call with Agora:", err);
       hangup();
     }
-  }, [myUserId, joinChannel, hangup, sendSignal, stopRingtone]);
+  }, [myUserId, joinChannel, hangup, sendSignal, stopRingtone, startPresence]);
+
+  // Join a group call that's already running (missed the ring, or rejoining after a drop).
+  const joinOngoingCall = useCallback(async (conversationId: number, callId: number, callType: CallType, groupName: string) => {
+    if (!myUserId || activeCallRef.current) return;
+    const call: ActiveCall = {
+      conversationId, remoteUserId: 0, remoteUserName: groupName, callType,
+      isInitiator: false, connectionState: "connecting", durationSecs: 0, isGroup: true, callId,
+    };
+    activeCallRef.current = call;
+    setActiveCall(call);
+    try {
+      await joinChannel(`call_conv_${conversationId}`, callType);
+      startPresence(callId);
+    } catch (err) {
+      console.error("Failed to join the call:", err);
+      alert("Could not access camera/microphone or connect to the call service.");
+      hangup();
+    }
+  }, [myUserId, joinChannel, startPresence, hangup]);
 
   // Reject incoming call
   const rejectCall = useCallback((signal: CallSignal) => {
@@ -509,6 +736,24 @@ export function useCallManager(myUserId: number | null) {
   }, [isMuted]);
 
   // Toggle Camera
+  /** Switch mic, camera or speaker during a call (and remember it for next time). */
+  const switchDevice = useCallback(async (kind: DeviceKind, deviceId: string) => {
+    setPreferredDevice(kind, deviceId);
+    try {
+      if (kind === "mic") await localAudioTrackRef.current?.setDevice(deviceId);
+      if (kind === "camera" && localVideoTrackRef.current) {
+        await localVideoTrackRef.current.setDevice(deviceId);
+        setLocalStream(new MediaStream([localVideoTrackRef.current.getMediaStreamTrack()]));
+      }
+      if (kind === "speaker") {
+        await Promise.all((agoraClientRef.current?.remoteUsers ?? [])
+          .map((u) => u.audioTrack?.setPlaybackDevice(deviceId).catch(() => {})));
+      }
+    } catch (err) {
+      console.warn("Couldn't switch device:", err);
+    }
+  }, []);
+
   const toggleCamera = useCallback(() => {
     if (localVideoTrackRef.current) {
       const nextCamOff = !isCamOff;
@@ -518,22 +763,12 @@ export function useCallManager(myUserId: number | null) {
   }, [isCamOff]);
 
   const stopScreenShare = useCallback(async () => {
-    const client = agoraClientRef.current;
     const screen = screenTrackRef.current;
-    if (!screen) return;
+    const sc = screenClientRef.current;
     screenTrackRef.current = null;
-    try {
-      if (client) await client.unpublish(screen);
-    } catch {}
-    screen.close();
-    // Put the camera back if this is a video call.
-    const cam = localVideoTrackRef.current;
-    if (cam && client) {
-      await client.publish(cam).catch(() => {});
-      setLocalStream(new MediaStream([cam.getMediaStreamTrack()]));
-    } else {
-      setLocalStream(null);
-    }
+    screenClientRef.current = null;
+    if (sc) await sc.leave().catch(() => {});
+    screen?.close();
     setIsScreenSharing(false);
   }, []);
 
@@ -543,40 +778,61 @@ export function useCallManager(myUserId: number | null) {
       await stopScreenShare();
       return;
     }
-    const client = agoraClientRef.current;
+    const call = activeCallRef.current;
     const AgoraRTC = await getAgoraRTC();
-    if (!client || !AgoraRTC) return;
+    if (!call || !AgoraRTC || !myUserId) return;
+    let screen: ILocalVideoTrack | null = null;
     try {
       const created = await AgoraRTC.createScreenVideoTrack({ encoderConfig: "1080p_1", optimizationMode: "detail" }, "disable");
-      const screen = Array.isArray(created) ? created[0] : created;
-      const cam = localVideoTrackRef.current;
-      if (cam) await client.unpublish(cam).catch(() => {});
-      await client.publish(screen);
-      screenTrackRef.current = screen;
-      screen.on("track-ended", () => { stopScreenShare(); });
-      setLocalStream(new MediaStream([screen.getMediaStreamTrack()]));
+      const track = Array.isArray(created) ? created[0] : created;
+      screen = track;
+      // The screen goes out on its own connection so the camera keeps running alongside it.
+      const channelName = `call_conv_${call.conversationId}`;
+      const tokenUrl = `/api/agora/token?channelName=${encodeURIComponent(channelName)}&screen=true`;
+      const { appId, token } = await apiGet<AgoraTokenResponse>(tokenUrl);
+      const sc = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+      const renew = () => apiGet<AgoraTokenResponse>(tokenUrl).then((t) => sc.renewToken(t.token)).catch(() => {});
+      sc.on("token-privilege-will-expire", renew);
+      sc.on("token-privilege-did-expire", renew);
+      await sc.join(appId || process.env.NEXT_PUBLIC_AGORA_APP_ID || "", channelName, token || null, myUserId + SCREEN_UID_OFFSET);
+      await sc.publish(track);
+      screenClientRef.current = sc;
+      screenTrackRef.current = track;
+      track.on("track-ended", () => { stopScreenShare(); }); // browser's own "Stop sharing" bar
       setIsScreenSharing(true);
     } catch (err) {
+      screen?.close();
       // User cancelled the browser's picker, or sharing isn't supported.
       console.warn("Screen share cancelled or failed:", err);
     }
-  }, [stopScreenShare]);
+  }, [stopScreenShare, myUserId]);
 
   return {
     activeCall,
     incomingSignal,
     localStream,
     participants,
+    screenShares,
+    networkQuality,
+    connectionUnstable,
+    noiseSuppression,
+    backgroundBlur,
+    raisedHands,
+    toggleHand,
+    setNoiseSuppression,
+    setBackgroundBlur,
     isMuted,
     isCamOff,
     isScreenSharing,
     initiateCall,
     initiateGroupCall,
+    joinOngoingCall,
     acceptCall,
     rejectCall,
     hangup,
     toggleMute,
     toggleCamera,
     toggleScreenShare,
+    switchDevice,
   };
 }

@@ -58,6 +58,15 @@ function formatDateHeader(isoString: string): string {
   });
 }
 
+/** GET /api/calls/active and /topic/conversation.{id}.call */
+interface LiveCall {
+  active: true;
+  callId: number;
+  type: "AUDIO" | "VIDEO";
+  startedAt: string;
+  participants: { userId: number; name: string }[];
+}
+
 export default function ChatWindow({ conversationId }: ChatWindowProps) {
   const userId = useStore((s) => s.userId);
   const userName = useStore((s) => s.userName);
@@ -83,7 +92,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
   const typingUsers = useStore(selectConvTyping);
   const setTyping = useStore((s) => s.setTyping);
 
-  const { initiateCall, initiateGroupCall, inCall } = useCallContext();
+  const { initiateCall, initiateGroupCall, inCall, joinOngoingCall, activeCallConversationId } = useCallContext();
 
   const [text, setText] = useState(() => useStore.getState().drafts[conversationId] ?? "");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -126,6 +135,21 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
       ? userId !== null && activeConv.adminIds.includes(userId)
       : !!activeConv?.members.some((m) => m.id === userId && m.role === "ADMIN"));
   const isReadOnly = (activeConv?.onlyAdminsCanPost || activeConv?.isAnnouncement) && !isConvAdmin;
+
+  // Group calls already running in this chat (so members who missed the ring can join).
+  const [liveCall, setLiveCall] = useState<LiveCall | null>(null);
+  const isGroupChat = activeConv?.type === "GROUP";
+  useEffect(() => {
+    if (!isGroupChat) return;
+    let alive = true;
+    let sub: { unsubscribe: () => void } | null = null;
+    const apply = (c: LiveCall | { active: false }) => { if (alive) setLiveCall(c.active ? c : null); };
+    apiGet<LiveCall | { active: false }>("/api/calls/active", { conversationId }).then(apply).catch(() => {});
+    subscribe(`/topic/conversation.${conversationId}.call`, (frame) => apply(JSON.parse(frame.body)))
+      .then((s) => { if (alive) sub = s; else s.unsubscribe(); })
+      .catch(() => {});
+    return () => { alive = false; sub?.unsubscribe(); };
+  }, [isGroupChat, conversationId]);
 
   // Announcement groups: who acknowledged which post ("n of m acknowledged").
   const [acks, setAcks] = useState<{ counts: Record<number, number>; mine: Set<number>; audience: number } | null>(null);
@@ -919,6 +943,27 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
           </div>
         </header>
 
+        {liveCall && activeCallConversationId !== conversationId && (
+          <div className="cw-live-call" role="status">
+            <span className="cw-live-dot" aria-hidden="true" />
+            {liveCall.type === "VIDEO" ? <Video size={16} /> : <Phone size={16} />}
+            <span className="cw-live-text">
+              <b>{liveCall.type === "VIDEO" ? "Video" : "Voice"} call in progress</b>
+              <span> · {liveCall.participants.map((p) => p.name).slice(0, 3).join(", ")}
+                {liveCall.participants.length > 3 ? ` +${liveCall.participants.length - 3}` : ""}</span>
+            </span>
+            <button
+              type="button"
+              className="cw-live-join"
+              disabled={inCall}
+              title={inCall ? "Leave your current call first" : "Join the call"}
+              onClick={() => joinOngoingCall(conversationId, liveCall.callId, liveCall.type, title)}
+            >
+              Join
+            </button>
+          </div>
+        )}
+
         {/* In-Chat Search Sub-Header Bar */}
         {isSearchOpen && (
           <div className="cw-search-subbar">
@@ -1459,6 +1504,17 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
           color: var(--accent); font-weight: 600; pointer-events: none;
         }
         .cw-file-pills { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+        .cw-live-call {
+          display: flex; align-items: center; gap: 0.55rem; padding: 0.55rem 1.5rem;
+          background: var(--success-soft, #dcfce7); color: var(--success-text, #166534);
+          border-bottom: 1px solid var(--border); font-size: 0.85rem;
+        }
+        .cw-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #16a34a; animation: cw-pulse 1.4s infinite; flex-shrink: 0; }
+        @keyframes cw-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .cw-live-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cw-live-join { padding: 0.35rem 1rem; border-radius: 999px; border: none; background: #16a34a; color: #fff; font-weight: 700; font-size: 0.8rem; cursor: pointer; flex-shrink: 0; }
+        .cw-live-join:disabled { opacity: 0.55; cursor: not-allowed; }
+        @media (max-width: 768px) { .cw-live-call { padding: 0.5rem 0.75rem; } }
         .cw-scheduled-bar { border-top: 1px solid var(--border); background: var(--bg-primary); padding: 0.35rem 1.5rem; }
         .cw-scheduled-toggle {
           display: inline-flex; align-items: center; gap: 0.35rem; background: none; border: none; cursor: pointer;

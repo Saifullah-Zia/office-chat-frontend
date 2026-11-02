@@ -14,6 +14,12 @@ interface Analytics {
   topSenders: { userId: number; name: string; department: string; count: number }[];
   topGroups: { conversationId: number; name: string; count: number }[];
   messagesInPeriod: number;
+  calls: {
+    total: number; answered: number; missed: number; video: number; group: number;
+    avgDurationSecs: number; totalMinutes: number;
+    perDay: { date: string; count: number }[];
+    topCallers: { userId: number; name: string; count: number }[];
+  };
 }
 
 interface ExportableConversation { id: number; type: "GROUP" | "DIRECT"; label: string; memberCount: number; lastMessageAt: string | null }
@@ -21,6 +27,13 @@ interface ExportableConversation { id: number; type: "GROUP" | "DIRECT"; label: 
 const RANGES = [7, 30, 90] as const;
 
 const fmt = (n: number) => n.toLocaleString();
+
+/** 75 -> "1m 15s", 3700 -> "1h 1m" */
+function formatDurationShort(secs: number) {
+  if (!secs) return "—";
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), sec = secs % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m ${sec}s` : `${sec}s`;
+}
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -54,7 +67,8 @@ async function exportConversation(id: number) {
 }
 
 /** Single-series daily bar chart: accent bars, 2px gaps, recessive axis, per-bar tooltip. */
-function DailyBars({ data }: { data: Analytics["messagesPerDay"] }) {
+function DailyBars({ data, unit = "message" }: { data: { date: string; count: number }[]; unit?: string }) {
+  const Unit = unit.charAt(0).toUpperCase() + unit.slice(1);
   const [hover, setHover] = useState<number | null>(null);
   const max = Math.max(1, ...data.map((d) => d.count));
   const W = 600, H = 160, PAD_B = 18, gap = 2;
@@ -65,7 +79,7 @@ function DailyBars({ data }: { data: Analytics["messagesPerDay"] }) {
   return (
     <div className="aa-chart">
       <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img"
-        aria-label={`Messages per day, peak ${fmt(max)}`} onMouseLeave={() => setHover(null)}>
+        aria-label={`${Unit}s per day, peak ${fmt(max)}`} onMouseLeave={() => setHover(null)}>
         <line x1={0} x2={W} y1={plotH / 2} y2={plotH / 2} className="aa-grid" />
         <line x1={0} x2={W} y1={plotH} y2={plotH} className="aa-axis" />
         {data.map((d, i) => {
@@ -92,13 +106,13 @@ function DailyBars({ data }: { data: Analytics["messagesPerDay"] }) {
       </div>
       {hovered && hover !== null && (
         <div className="aa-tooltip" style={{ left: `${((hover + 0.5) / data.length) * 100}%` }}>
-          <strong>{fmt(hovered.count)}</strong> message{hovered.count === 1 ? "" : "s"}
+          <strong>{fmt(hovered.count)}</strong> {unit}{hovered.count === 1 ? "" : "s"}
           <span>{shortDate(hovered.date)}</span>
         </div>
       )}
       <table className="aa-sr-only">
-        <caption>Messages per day</caption>
-        <thead><tr><th>Date</th><th>Messages</th></tr></thead>
+        <caption>{Unit}s per day</caption>
+        <thead><tr><th>Date</th><th>{Unit}s</th></tr></thead>
         <tbody>{data.map((d) => <tr key={d.date}><td>{d.date}</td><td>{d.count}</td></tr>)}</tbody>
       </table>
     </div>
@@ -214,6 +228,33 @@ export default function AdminAnalytics() {
         key: i, label: t.type.charAt(0) + t.type.slice(1).toLowerCase(), count: t.count,
       }))} />
 
+      {data.calls && (
+        <>
+          <h3 className="aa-section">Calls</h3>
+          <div className="aa-tiles">
+            {([
+              ["Calls", fmt(data.calls.total)],
+              ["Answered", data.calls.total ? `${Math.round((data.calls.answered / data.calls.total) * 100)}%` : "—"],
+              ["Missed", fmt(data.calls.missed)],
+              ["Avg length", formatDurationShort(data.calls.avgDurationSecs)],
+              ["Talk time", `${fmt(data.calls.totalMinutes)} min`],
+              ["Video", data.calls.total ? `${Math.round((data.calls.video / data.calls.total) * 100)}%` : "—"],
+              ["Group calls", fmt(data.calls.group)],
+            ] as [string, string][]).map(([label, value]) => (
+              <div key={label} className="aa-tile">
+                <span className="aa-tile-value">{value}</span>
+                <span className="aa-tile-label">{label}</span>
+              </div>
+            ))}
+          </div>
+          <section className="aa-card">
+            <h4 className="aa-card-title">Calls per day</h4>
+            <DailyBars data={data.calls.perDay} unit="call" />
+          </section>
+          <RankList title="Who calls most" rows={data.calls.topCallers.map((c) => ({ key: c.userId, label: c.name, count: c.count }))} />
+        </>
+      )}
+
       <section className="aa-card">
         <h4 className="aa-card-title">Compliance export</h4>
         <p className="aa-note">Find a chat and download all of its messages as CSV. Each export is recorded in the audit log.</p>
@@ -252,6 +293,7 @@ export default function AdminAnalytics() {
         .aa-tile { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 0.65rem 0.75rem; display: flex; flex-direction: column; gap: 0.15rem; }
         .aa-tile-value { font-size: 1.25rem; font-weight: 800; color: var(--text-primary); font-variant-numeric: tabular-nums; }
         .aa-tile-label { font-size: 0.72rem; color: var(--text-muted); font-weight: 600; }
+        .aa-section { margin: 0.4rem 0 0; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
         .aa-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 0.85rem; }
         .aa-card-title { margin: 0 0 0.6rem; font-size: 0.85rem; font-weight: 700; color: var(--text-primary); }
         .aa-chart { position: relative; }
