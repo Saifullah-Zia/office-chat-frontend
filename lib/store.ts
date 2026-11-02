@@ -150,6 +150,8 @@ export const useStore = create<AppState>()((set) => ({
   users: [],
   upsertUser: (user) =>
     set((s) => ({
+      // My own rename (from any device) also updates the header name.
+      ...(user.id === s.userId && user.name && user.name !== s.userName ? { userName: user.name } : {}),
       users: s.users.some((u) => u.id === user.id)
         // A live update may withhold a provider's email; keep the copy an admin already has.
         ? s.users.map((u) => (u.id === user.id

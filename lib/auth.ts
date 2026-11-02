@@ -41,6 +41,12 @@ export function getUser(): StoredUser | null {
   }
 }
 
+/** Keep the stored name in step after the user renames themselves. */
+export function updateStoredName(name: string): void {
+  const user = getUser();
+  if (user) localStorage.setItem(USER_KEY, JSON.stringify({ ...user, name }));
+}
+
 /** Check if the user is authenticated */
 export function isAuthenticated(): boolean {
   return getToken() !== null && getUser() !== null;

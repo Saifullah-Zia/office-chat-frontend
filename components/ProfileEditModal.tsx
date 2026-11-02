@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { X, Camera, Trash2, Loader2, UserCircle2 } from "lucide-react";
 import { apiDelete, apiErrorMessage, apiPostForm, apiPut } from "@/lib/api";
 import { useStore } from "@/lib/store";
+import { updateStoredName } from "@/lib/auth";
 import { useEscapeKey } from "@/hooks/useEscapeKey";
 import { UserResponse } from "@/types";
 import Avatar from "./Avatar";
@@ -13,13 +14,16 @@ const OUTPUT = 512;  // uploaded square, px
 
 interface Crop { img: HTMLImageElement; url: string; zoom: number; x: number; y: number }
 
-/** Edit my photo (with a circular crop) and job title. */
+/** Edit my photo (with a circular crop), name, job title and department. */
 export default function ProfileEditModal({ onClose }: { onClose: () => void }) {
   useEscapeKey(onClose);
   const userId = useStore((s) => s.userId);
   const me = useStore((s) => s.users.find((u) => u.id === s.userId));
   const upsertUser = useStore((s) => s.upsertUser);
+  const myName = useStore((s) => s.userName);
+  const [name, setName] = useState(me?.name ?? myName ?? "");
   const [jobTitle, setJobTitle] = useState(me?.jobTitle ?? "");
+  const [department, setDepartment] = useState(me?.department ?? "");
   const [crop, setCrop] = useState<Crop | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,8 +85,13 @@ export default function ProfileEditModal({ onClose }: { onClose: () => void }) {
         form.append("file", blob, "avatar.jpg");
         updated = await apiPostForm<UserResponse>("/api/users/me/photo", form);
       }
-      if ((me?.jobTitle ?? "") !== jobTitle.trim()) {
-        updated = await apiPut<UserResponse>("/api/users/me/profile", { jobTitle: jobTitle.trim() });
+      const newName = name.trim().replace(/\s+/g, " ");
+      if (newName.length < 2) throw new Error("Enter your name (at least 2 characters).");
+      if ((me?.name ?? myName ?? "") !== newName || (me?.jobTitle ?? "") !== jobTitle.trim()
+          || (me?.department ?? "") !== department.trim()) {
+        updated = await apiPut<UserResponse>("/api/users/me/profile",
+          { name: newName, jobTitle: jobTitle.trim(), department: department.trim() });
+        updateStoredName(updated.name);
       }
       if (updated) upsertUser(updated);
       onClose();
@@ -158,10 +167,17 @@ export default function ProfileEditModal({ onClose }: { onClose: () => void }) {
           </div>
 
           <label className="pem-field">
+            <span>Name</span>
+            <input value={name} maxLength={100} placeholder="Your full name" autoComplete="name" onChange={(e) => setName(e.target.value)} />
+          </label>
+          <label className="pem-field">
             <span>Job title</span>
             <input value={jobTitle} maxLength={100} placeholder="e.g. Senior Designer" onChange={(e) => setJobTitle(e.target.value)} />
           </label>
-          {me?.department && <p className="pem-hint">Department: {me.department} (set by an admin)</p>}
+          <label className="pem-field">
+            <span>Department</span>
+            <input value={department} maxLength={100} placeholder="e.g. Billing" onChange={(e) => setDepartment(e.target.value)} />
+          </label>
           {error && <p className="pem-error" role="alert">{error}</p>}
         </div>
 
