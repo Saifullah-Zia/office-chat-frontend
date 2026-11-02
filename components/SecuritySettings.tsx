@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ShieldCheck, ShieldOff, Laptop, Smartphone, Loader2, Copy, Check, Download } from "lucide-react";
 import QRCode from "qrcode";
+import ChangePasswordForm from "./ChangePasswordForm";
 import { apiGet, apiPost, apiDelete, apiErrorMessage } from "@/lib/api";
 
 interface SessionView {
@@ -106,6 +107,8 @@ export default function SecuritySettings() {
   });
 
   const [exporting, setExporting] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [passwordChanged, setPasswordChanged] = useState(false);
   const downloadMyData = async () => {
     setExporting(true);
     try {
@@ -195,6 +198,28 @@ export default function SecuritySettings() {
           </div>
         ) : null}
         {error && <p className="sec-error">{error}</p>}
+      </div>
+
+      {/* ── Password ── */}
+      <div className="sec-block">
+        <div className="sec-row">
+          <span className="sec-title">Password</span>
+          {!changingPassword && (
+            <button type="button" className="sec-link" onClick={() => { setChangingPassword(true); setPasswordChanged(false); }}>
+              Change password
+            </button>
+          )}
+        </div>
+        {changingPassword ? (
+          <>
+            <ChangePasswordForm onDone={() => { setChangingPassword(false); setPasswordChanged(true); load(); }} />
+            <button type="button" className="sec-link" onClick={() => setChangingPassword(false)}>Cancel</button>
+          </>
+        ) : passwordChanged ? (
+          <p className="sec-note sec-on">Password changed. Your other devices were signed out.</p>
+        ) : (
+          <p className="sec-note">Forgot it? Ask an admin to reset it for you.</p>
+        )}
       </div>
 
       {/* ── Sessions ── */}

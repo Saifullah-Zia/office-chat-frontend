@@ -10,6 +10,8 @@ export interface AuthResponse {
   /** Two-step verification: password accepted, now send the code with this token. */
   mfaRequired?: boolean;
   mfaToken?: string | null;
+  /** Signed in with a temporary password: choose a new one before using the app. */
+  mustChangePassword?: boolean;
 }
 
 export interface LoginRequest {

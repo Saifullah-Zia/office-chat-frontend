@@ -2,7 +2,7 @@
 
 import { useEscapeKey } from "@/hooks/useEscapeKey";
 import { useState, useEffect, useCallback } from "react";
-import { X, Shield, UserX, UserCheck, ChevronDown, UserPlus, FileUp } from "lucide-react";
+import { X, Shield, UserX, UserCheck, ChevronDown, UserPlus, FileUp, KeyRound } from "lucide-react";
 import { apiGet, apiDelete, apiPut, apiErrorMessage } from "@/lib/api";
 import { UserResponse, Role } from "@/types";
 import Avatar from "./Avatar";
@@ -12,6 +12,8 @@ import AdminAnalytics from "./AdminAnalytics";
 import AdminPolicies from "./AdminPolicies";
 import AddUserModal from "./AddUserModal";
 import ImportUsersModal from "./ImportUsersModal";
+import ResetPasswordModal from "./ResetPasswordModal";
+import { useStore } from "@/lib/store";
 
 interface AdminPanelProps {
   open: boolean;
@@ -38,6 +40,8 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isAddUserOpen, setIsAddUserOpen] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
+  const [resetFor, setResetFor] = useState<UserResponse | null>(null);
+  const myUserId = useStore((s) => s.userId);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -236,6 +240,18 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
                     <ChevronDown size={12} className="ap-select-icon" />
                   </div>
 
+                  {/* Reset password (not for yourself: use Settings → Security) */}
+                  {user.active && user.id !== myUserId && (
+                    <button
+                      className="ap-btn ap-btn--ghost"
+                      onClick={() => setResetFor(user)}
+                      title="Reset password"
+                      aria-label={`Reset password for ${user.name}`}
+                    >
+                      <KeyRound size={14} />
+                    </button>
+                  )}
+
                   {/* Activate / Deactivate */}
                   {user.active ? (
                     confirmDelete === user.id ? (
@@ -289,6 +305,7 @@ export default function AdminPanel({ open, onClose, onUsersChanged }: AdminPanel
         onClose={() => setIsAddUserOpen(false)}
         onUserAdded={() => { fetchUsers(); onUsersChanged(); }}
       />
+      {resetFor && <ResetPasswordModal user={resetFor} onClose={() => setResetFor(null)} />}
       {isImportOpen && (
         <ImportUsersModal onClose={() => setIsImportOpen(false)} onImported={() => { fetchUsers(); onUsersChanged(); }} />
       )}

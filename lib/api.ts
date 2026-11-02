@@ -43,6 +43,13 @@ api.interceptors.response.use(
       }
     }
 
+    // Temporary password: the server refuses everything until a new one is chosen.
+    const code = (error.response?.data as { code?: string } | undefined)?.code;
+    if (error.response?.status === 403 && code === "PASSWORD_CHANGE_REQUIRED"
+        && typeof window !== "undefined" && window.location.pathname !== "/change-password") {
+      window.location.href = "/change-password";
+    }
+
     // Rate limits and oversized uploads: tell the user instead of failing silently.
     const status = error.response?.status;
     if ((status === 429 || status === 413) && !url.includes("/link-preview")) {

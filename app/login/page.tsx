@@ -41,7 +41,7 @@ export default function LoginPage() {
       email: data.email,
       role: data.role,
     });
-    window.location.href = "/";
+    window.location.href = data.mustChangePassword ? "/change-password" : "/";
   };
 
   const handleVerify = async (e: React.FormEvent) => {
@@ -84,7 +84,7 @@ export default function LoginPage() {
       });
 
       // Then navigate — full reload ensures clean state
-      window.location.href = "/";
+      window.location.href = data.mustChangePassword ? "/change-password" : "/";
     } catch (err: unknown) {
       const e_ = err as {
         response?: { status?: number; data?: { error?: string; message?: string } };
@@ -162,7 +162,10 @@ export default function LoginPage() {
           </div>
 
           <div className="field-group">
-            <label htmlFor="login-password">Password</label>
+            <div className="password-label-row">
+              <label htmlFor="login-password">Password</label>
+              <Link href="/forgot-password" className="forgot-link">Forgot password?</Link>
+            </div>
             <div className="password-wrapper">
               <input
                 id="login-password"
@@ -249,6 +252,9 @@ export default function LoginPage() {
         .login-footer { margin-top: 1.5rem; text-align: center; font-size: 0.875rem; color: #94a3b8; }
         .login-footer a { color: #3b82f6; font-weight: 500; }
         .login-footer a:hover { text-decoration: underline; }
+              .password-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+        .forgot-link { font-size: 0.8rem; font-weight: 600; color: #818cf8; text-decoration: none; }
+        .forgot-link:hover { text-decoration: underline; }
       `}</style>
     </div>
   );
