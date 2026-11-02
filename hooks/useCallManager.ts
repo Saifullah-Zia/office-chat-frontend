@@ -133,6 +133,9 @@ export function useCallManager(myUserId: number | null) {
   const [backgroundBlur, setBackgroundBlurState] = useState(false);
   const denoiseProcRef = useRef<IAIDenoiserProcessor | null>(null);
   const blurProcRef = useRef<IVirtualBackgroundProcessor | null>(null);
+  // Bumped on every hangup. Setup steps that are still awaiting (joining, opening the mic, attaching
+  // effects) compare against it and close what they opened instead of leaving the mic on.
+  const callEpochRef = useRef(0);
   const badStreakRef = useRef(0);
   const screenClientRef = useRef<IAgoraRTCClient | null>(null);
   const [isMuted, setIsMuted] = useState(false);
@@ -217,7 +220,7 @@ export function useCallManager(myUserId: number | null) {
       if (!denoiseProcRef.current) {
         if (!on) return false;
         const { denoiser } = await loadCallEffects(AgoraRTC);
-        if (!denoiser) return false;
+        if (!denoiser || localAudioTrackRef.current !== track) return false; // call ended meanwhile
         const proc = denoiser.createProcessor();
         // If the processor fails mid-call, fall back to the plain mic instead of going silent.
         proc.on("pipeerror", () => {
@@ -250,6 +253,7 @@ export function useCallManager(myUserId: number | null) {
         if (!blur) return false;
         const proc = blur.createProcessor();
         await proc.init();
+        if (localVideoTrackRef.current !== track) { proc.release().catch(() => {}); return false; } // call ended meanwhile
         proc.setOptions({ type: "blur", blurDegree: 2 });
         track.pipe(proc).pipe(track.processorDestination);
         blurProcRef.current = proc;
@@ -265,6 +269,7 @@ export function useCallManager(myUserId: number | null) {
 
   // Clean up call state completely
   const hangup = useCallback(() => {
+    callEpochRef.current++;
     stopRingtone();
     clearRingTimeout();
 
@@ -454,7 +459,10 @@ export function useCallManager(myUserId: number | null) {
   }, [stopRingtone, updateCallState, hangup, upsertParticipant]);
 
   /** Join the conversation's Agora channel and publish mic (+ camera for video). */
-  const joinChannel = useCallback(async (channelName: string, type: CallType) => {
+  /** Returns false (having released everything) if the call ended while connecting. */
+  const joinChannel = useCallback(async (channelName: string, type: CallType): Promise<boolean> => {
+    const epoch = callEpochRef.current;
+    const ended = () => callEpochRef.current !== epoch;
     const AgoraRTC = await getAgoraRTC();
     if (!AgoraRTC || !myUserId) throw new Error("Agora unavailable");
 
@@ -467,6 +475,7 @@ export function useCallManager(myUserId: number | null) {
     const client = await setupAgoraClient();
     if (!client) throw new Error("Agora unavailable");
     await client.join(effectiveAppId, channelName, token || null, myUserId);
+    if (ended()) { client.leave().catch(() => {}); return false; }
 
     // Tokens are short-lived (2h): fetch a fresh one shortly before expiry so long calls never drop.
     const renewToken = async () => {
@@ -494,11 +503,13 @@ export function useCallManager(myUserId: number | null) {
       AGC: true,
       microphoneId,
     }), prefs.mic);
+    if (ended()) { audioTrack.close(); client.leave().catch(() => {}); return false; }
     localAudioTrackRef.current = audioTrack;
 
     const tracks: (IMicrophoneAudioTrack | ICameraVideoTrack)[] = [audioTrack];
     if (type === "VIDEO") {
       const videoTrack = await withFallback((cameraId) => AgoraRTC.createCameraVideoTrack({ cameraId }), prefs.camera);
+      if (ended()) { videoTrack.close(); audioTrack.close(); client.leave().catch(() => {}); return false; }
       localVideoTrackRef.current = videoTrack;
       tracks.push(videoTrack);
       setLocalStream(new MediaStream([videoTrack.getMediaStreamTrack()]));
@@ -506,11 +517,13 @@ export function useCallManager(myUserId: number | null) {
       setLocalStream(null);
     }
     await client.publish(tracks);
+    if (ended()) return false; // hangup already closed the tracks and left
 
     // Effects from my saved preferences; failures just leave the plain mic/camera.
     const fx = getEffectPrefs();
     applyNoiseSuppression(fx.noise).then(setNoiseSuppressionState);
     if (type === "VIDEO" && fx.blur) applyBackgroundBlur(true).then(setBackgroundBlurState);
+    return true;
   }, [myUserId, setupAgoraClient, applyNoiseSuppression, applyBackgroundBlur]);
 
   // Raised hands for the call I'm in (members-only topic; the server stamps who raised it).
@@ -637,7 +650,7 @@ export function useCallManager(myUserId: number | null) {
       activeCallRef.current = call;
       setActiveCall(call);
 
-      await joinChannel(channelName, type);
+      if (!(await joinChannel(channelName, type))) return;
       ringtoneStopRef.current = startRingtone();
       timeoutRef.current = setTimeout(() => {
         if (participantsRef.current.length === 0) hangup();
@@ -671,7 +684,7 @@ export function useCallManager(myUserId: number | null) {
       activeCallRef.current = call;
       setActiveCall(call);
 
-      await joinChannel(channelName, type);
+      if (!(await joinChannel(channelName, type))) return;
       if (callId) startPresence(callId);
       groupInviteesRef.current = memberIds.filter((id) => id !== myUserId);
       ringtoneStopRef.current = startRingtone();
@@ -717,7 +730,7 @@ export function useCallManager(myUserId: number | null) {
       setActiveCall(call);
       setIncomingSignal(null);
 
-      await joinChannel(channelName, callType);
+      if (!(await joinChannel(channelName, callType))) return;
       if (signal.callId) apiPost(`/api/calls/${signal.callId}/accept`).catch(() => {});
       if (signal.isGroup && signal.callId) startPresence(signal.callId);
       await sendSignal(signal.fromUserId, {
@@ -740,7 +753,7 @@ export function useCallManager(myUserId: number | null) {
     activeCallRef.current = call;
     setActiveCall(call);
     try {
-      await joinChannel(`call_conv_${conversationId}`, callType);
+      if (!(await joinChannel(`call_conv_${conversationId}`, callType))) return;
       startPresence(callId);
     } catch (err) {
       console.error("Failed to join the call:", err);
