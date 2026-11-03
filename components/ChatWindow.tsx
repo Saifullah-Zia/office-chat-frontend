@@ -13,6 +13,7 @@ import { aiEnabled } from "@/lib/ai";
 import { ScheduleMessageModal, formatWhen } from "./PlannerModals";
 import ThreadPanel from "./ThreadPanel";
 import TicketControl from "./TicketControl";
+import { compressImage } from "@/lib/imageCompress";
 import { showToast } from "@/lib/toast";
 import { formatLastSeen } from "@/lib/time";
 import { useStore } from "@/lib/store";
@@ -651,7 +652,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
       try {
         for (const file of selectedFiles) {
           const formData = new FormData();
-          formData.append("file", file);
+          formData.append("file", await compressImage(file));
           formData.append("conversationId", conversationId.toString());
           const att = await apiPostForm<AttachmentResponse>("/api/files/upload", formData);
           attachmentIds.push(att.id);

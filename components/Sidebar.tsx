@@ -15,6 +15,7 @@ import {
 } from "@/types";
 import { subscribe, Topics } from "@/lib/socket";
 import { signOut } from "@/lib/signOut";
+import { pushActiveHere } from "@/lib/push";
 import { playMessageChime } from "@/lib/sound";
 import { desktopNotify } from "@/lib/notify";
 import { showToast } from "@/lib/toast";
@@ -330,6 +331,8 @@ export default function Sidebar() {
           // Mentions still alert in muted chats (like WhatsApp); plain messages don't.
           if (conv && isMutedConv(conv) && !mentionsMe) return;
           playMessageChime();
+          // In the background with push on: the push notification shows it; don't show it twice.
+          if (pushActiveHere() && document.visibilityState !== "visible") return;
           desktopNotify(
             conv?.type === "GROUP" ? `${msg.senderName} · ${conv.name ?? "Group"}` : msg.senderName,
             msg.content || "Sent an attachment",

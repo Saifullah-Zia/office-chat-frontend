@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { X, Clock, AlarmClock, ListTodo, Loader2, CheckCircle2, Paperclip } from "lucide-react";
 import { apiPost, apiPostForm, apiErrorMessage } from "@/lib/api";
 import { useStore } from "@/lib/store";
+import { compressImage } from "@/lib/imageCompress";
 import { AttachmentResponse, MemberResponse, MessageResponse, ScheduledMessageView, TaskView } from "@/types";
 
 // ── Time presets ─────────────────────────────────────────────────────
@@ -174,7 +175,7 @@ export function ScheduleMessageModal({ conversationId, initialText, initialFiles
       } else {
         for (const [i, file] of files.entries()) {
           const form = new FormData();
-          form.append("file", file);
+          form.append("file", await compressImage(file));
           form.append("conversationId", conversationId.toString());
           const att = await apiPostForm<AttachmentResponse>("/api/files/upload", form);
           onScheduled(await apiPost<ScheduledMessageView>("/api/scheduled", {

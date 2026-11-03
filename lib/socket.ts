@@ -7,6 +7,15 @@ import { WS_URL } from "@/lib/config";
 
 let stompClient: Client | null = null;
 
+/** Tell the server whether this app is on screen: it then skips push notifications (we see it here). */
+function reportVisibility(client: Client) {
+  if (!client.connected || typeof document === "undefined") return;
+  try {
+    client.publish({ destination: "/app/presence.visible", body: JSON.stringify({ visible: document.visibilityState === "visible" }) });
+  } catch {}
+}
+let visibilityHooked = false;
+
 /**
  * Every live subscription, so they can be restored after a reconnect. stompjs reconnects on its own
  * (server restart, network blip) but does NOT re-subscribe, which left open tabs silently deaf.
@@ -28,7 +37,15 @@ export function getStompClient(): Client {
         client.connectHeaders = { Authorization: `Bearer ${getToken() ?? ""}` };
       },
       reconnectDelay: 5_000,
+      // Both sides check the line every 10s, so a dead connection is noticed quickly.
+      heartbeatIncoming: 10_000,
+      heartbeatOutgoing: 10_000,
       onConnect: () => {
+        reportVisibility(client);
+        if (!visibilityHooked && typeof document !== "undefined") {
+          visibilityHooked = true;
+          document.addEventListener("visibilitychange", () => { if (stompClient) reportVisibility(stompClient); });
+        }
         for (const entry of registry) {
           entry.sub = client.subscribe(entry.destination, entry.callback);
         }
