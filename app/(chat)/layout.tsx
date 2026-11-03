@@ -12,6 +12,7 @@ import { CallContext } from "@/context/CallContext";
 import GlobalSearchModal from "@/components/GlobalSearchModal";
 import Toaster from "@/components/Toaster";
 import IdleLock from "@/components/IdleLock";
+import PhoneReadyBanner from "@/components/PhoneReadyBanner";
 import { syncPushSubscription } from "@/lib/push";
 import { registerNativePush } from "@/lib/native";
 import { API_BASE } from "@/lib/config";
@@ -141,6 +142,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
         <GlobalSearchModal />
         <Toaster />
         <IdleLock inCall={!!activeCall} ringing={!!incomingSignal && !activeCall} />
+        {!activeCall && <PhoneReadyBanner />}
 
         {activeCall && (
           <CallWindow

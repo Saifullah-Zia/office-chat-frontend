@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Video, VideoOff, PhoneOff, Monitor, MonitorOff, Users, Settings2, WifiOff, Minimize2, Maximize2, Hand, MessageSquare, Maximize, Minimize } from "lucide-react";
 import CallChatPanel from "./CallChatPanel";
+import { isNativeApp, isNativeDeviceLocked } from "@/lib/native";
 import { useStore } from "@/lib/store";
 import DeviceSettings from "./DeviceSettings";
 import { DeviceKind } from "@/lib/devices";
@@ -199,7 +200,16 @@ export default function CallWindow({
   };
   const myHand = myUserId !== null && raisedHands.has(myUserId);
   // Minimized: a small draggable window so the chat stays usable during the call.
-  const [minimized, setMinimized] = useState(false);
+  const [minimizedRaw, setMinimized] = useState(false);
+  // Android app, answered from the lock screen: the call shows over the lock screen. Keep it to the
+  // call itself (no chats, no minimising into the app) until the phone is unlocked.
+  const [phoneLocked, setPhoneLocked] = useState(isNativeDeviceLocked);
+  useEffect(() => {
+    if (!isNativeApp()) return;
+    const t = setInterval(() => setPhoneLocked(isNativeDeviceLocked()), 1_500);
+    return () => clearInterval(t);
+  }, []);
+  const minimized = minimizedRaw && !phoneLocked;
   const [miniPos, setMiniPos] = useState<{ x: number; y: number } | null>(null);
   const drag = useRef<{ dx: number; dy: number } | null>(null);
   const isVideo = activeCall.callType === "VIDEO";
@@ -291,6 +301,7 @@ export default function CallWindow({
             <Users size={15} /> {participants.length + 1}
             {raisedHands.size > 0 && <span className="clw-people-hands">✋{raisedHands.size}</span>}
           </button>
+          {!phoneLocked && (<>
           <button type="button" className={`clw-people-btn clw-chat-btn ${panel === "chat" ? "clw-people-btn--on" : ""}`}
             onClick={() => togglePanel("chat")} aria-expanded={panel === "chat"} title="Chat in this call"
             aria-label={`Chat${unread && panel !== "chat" ? ` (${unread} new)` : ""}`}>
@@ -301,9 +312,10 @@ export default function CallWindow({
             title="Minimize: keep chatting during the call" aria-label="Minimize call">
             <Minimize2 size={16} />
           </button>
+          </>)}
         </div>
 
-        {panel === "chat" && <CallChatPanel conversationId={activeCall.conversationId} />}
+        {panel === "chat" && !phoneLocked && <CallChatPanel conversationId={activeCall.conversationId} />}
 
         {peopleOpen && (
           <aside className="clw-people" aria-label="People in this call">

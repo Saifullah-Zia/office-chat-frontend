@@ -7,6 +7,7 @@ import { showToast } from "@/lib/toast";
 import {
   NativeStatus, getNativeStatus, isNativeApp, openNativeAppInfo, openNativeAutoStart, openNativeBattery, registerNativePush, sendNativeTest,
 } from "@/lib/native";
+import { brandTips, isConfirmed, needsAutoStart } from "@/lib/phoneReady";
 
 const TEST_DELAY = 30;
 
@@ -52,8 +53,8 @@ export default function PhoneCheck() {
   };
 
   const last = status?.lastPushAt ? new Date(status.lastPushAt) : null;
-  const brand = status?.manufacturer?.toLowerCase() ?? "";
-  const needsAutoStart = /infinix|tecno|itel|xiaomi|redmi|poco|oppo|realme|vivo|huawei|honor|oneplus/.test(brand);
+  const confirmed = isConfirmed(status);
+  const tips = brandTips(status);
 
   return (
     <div className="pck">
@@ -65,10 +66,11 @@ export default function PhoneCheck() {
         fix={!status?.hasPushToken ? { text: "Retry", onClick: () => { registerNativePush().then(refresh); } } : undefined} />
       <Row ok={status?.batteryUnrestricted} label="Battery: not optimised"
         fix={!status?.batteryUnrestricted ? { text: "Fix", onClick: () => openNativeBattery() } : undefined} />
-      {needsAutoStart && (
-        <Row ok={null} label={`Auto-start allowed (${status?.manufacturer ?? "this phone"} only shows this in its own settings)`}
+      {needsAutoStart(status) && (
+        <Row ok={confirmed} label={confirmed ? "Auto-start allowed (a test reached the closed app)" : `Auto-start allowed (${status?.manufacturer ?? "this phone"} only shows this in its own settings)`}
           fix={{ text: "Open", onClick: () => openNativeAutoStart() }} />
       )}
+      {tips && !confirmed && <p className="pck-note pck-tip">{tips}</p>}
 
       <button type="button" className="pck-test" onClick={test} disabled={sending}>
         {sending && <Loader2 size={14} className="spin" />} Send a test ring in {TEST_DELAY} seconds
@@ -88,6 +90,7 @@ export default function PhoneCheck() {
         .pck { display: flex; flex-direction: column; gap: 0.5rem; }
         .pck-note { margin: 0; font-size: 0.78rem; color: var(--text-muted); }
         .pck-device { font-size: 0.72rem; }
+        .pck-tip { padding: 0.5rem 0.6rem; border-radius: 8px; background: var(--bg-tertiary); color: var(--text-secondary); }
         .pck-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.84rem; color: var(--text-primary); }
         .pck-row span { flex: 1; }
         .pck-ok { color: var(--success, #16a34a); }

@@ -18,6 +18,8 @@ interface AndroidBridge {
   openAutoStartSettings(): string;
   openBatterySettings(): void;
   openAppInfo?(): void;
+  /** The phone's lock screen is up (a call answered from it is shown on top). App 1.4+. */
+  isDeviceLocked?(): boolean;
 }
 
 interface OfficeChatPlugin {
@@ -126,6 +128,11 @@ export async function openNativeBattery(): Promise<void> {
     if (b) b.openBatterySettings();
     else await plugin()?.openBatterySettings();
   } catch {}
+}
+
+/** Answered from the lock screen and not unlocked yet: the call is shown over the lock screen. */
+export function isNativeDeviceLocked(): boolean {
+  try { return !!bridge()?.isDeviceLocked?.(); } catch { return false; }
 }
 
 export function openNativeAppInfo(): void {
