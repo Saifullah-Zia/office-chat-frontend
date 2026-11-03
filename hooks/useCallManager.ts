@@ -18,6 +18,7 @@ import type { IVirtualBackgroundProcessor } from "agora-extension-virtual-backgr
 import { subscribe, publish, Topics, Destinations } from "@/lib/socket";
 import { ActiveCall, CallParticipant, CallSignal, CallType, SCREEN_UID_OFFSET, ScreenShare, NetworkQuality } from "@/types/call";
 import { useStore } from "@/lib/store";
+import { setNativeInCall } from "@/lib/native";
 
 // Safely load AgoraRTC dynamic import on client-side only (prevents SSR 500 error in Next.js)
 async function getAgoraRTC() {
@@ -224,6 +225,9 @@ export function useCallManager(myUserId: number | null) {
 
   useEffect(() => { activeCallRef.current = activeCall; }, [activeCall]);
   useEffect(() => { participantsRef.current = participants; }, [participants]);
+  // Android app: keep the call alive in the background while it lasts.
+  const inCallNow = !!activeCall;
+  useEffect(() => { setNativeInCall(inCallNow); }, [inCallNow]);
 
   const stopRingtone = useCallback(() => {
     if (ringtoneStopRef.current) {

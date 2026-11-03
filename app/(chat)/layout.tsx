@@ -13,6 +13,7 @@ import GlobalSearchModal from "@/components/GlobalSearchModal";
 import Toaster from "@/components/Toaster";
 import IdleLock from "@/components/IdleLock";
 import { syncPushSubscription } from "@/lib/push";
+import { registerNativePush } from "@/lib/native";
 import { API_BASE } from "@/lib/config";
 
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
@@ -45,6 +46,9 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
     if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
       Notification.requestPermission().catch(() => {});
     }
+
+    // Inside the Android app: register this phone for calls and notifications.
+    registerNativePush();
 
     // eslint-disable-next-line react-hooks/set-state-in-effect -- render the app only after the session is restored from storage
     setReady(true);

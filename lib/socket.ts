@@ -8,11 +8,22 @@ import { WS_URL } from "@/lib/config";
 let stompClient: Client | null = null;
 
 /** Tell the server whether this app is on screen: it then skips push notifications (we see it here). */
+/** Set by the Android app (it knows better than the page whether it's in the background). */
+let nativeVisible: boolean | null = null;
+
 function reportVisibility(client: Client) {
   if (!client.connected || typeof document === "undefined") return;
+  const visible = nativeVisible ?? document.visibilityState === "visible";
   try {
-    client.publish({ destination: "/app/presence.visible", body: JSON.stringify({ visible: document.visibilityState === "visible" }) });
+    client.publish({ destination: "/app/presence.visible", body: JSON.stringify({ visible }) });
   } catch {}
+}
+
+if (typeof window !== "undefined") {
+  window.__officeChatNativeVisible = (visible: boolean) => {
+    nativeVisible = visible;
+    if (stompClient) reportVisibility(stompClient);
+  };
 }
 let visibilityHooked = false;
 
