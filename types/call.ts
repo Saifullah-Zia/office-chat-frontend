@@ -2,7 +2,8 @@ export type CallType = "AUDIO" | "VIDEO";
 export type CallConnectionState = "connecting" | "ringing" | "connected" | "reconnecting" | "failed";
 
 export interface CallSignal {
-  type: "OFFER" | "ANSWER" | "ICE_CANDIDATE" | "HANGUP";
+  /** ENDED comes from the server once the call is closed, so a phone that missed the hang-up still stops. */
+  type: "OFFER" | "ANSWER" | "ICE_CANDIDATE" | "HANGUP" | "ENDED";
   fromUserId: number;
   fromUserName: string;
   toUserId: number;

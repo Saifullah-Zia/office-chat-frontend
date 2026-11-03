@@ -95,6 +95,35 @@ function startRingtone(): () => void {
   };
 }
 
+/** The parts of an Agora mic/camera/screen track that hangup needs to switch it off for good. */
+interface LocalTrack { close: () => void; getMediaStreamTrack: () => MediaStreamTrack }
+
+/**
+ * Switch tracks off: stop the device capture itself (the mic light goes off) and close the Agora track.
+ * Run again a moment later, because an unmute or device switch that was still in progress when the
+ * call ended can reopen the microphone after the first pass.
+ */
+function releaseTracks(tracks: LocalTrack[]) {
+  const release = () => tracks.forEach((t) => {
+    try { t.getMediaStreamTrack()?.stop(); } catch {}
+    try { t.close(); } catch {}
+  });
+  release();
+  setTimeout(release, 1_500);
+  setTimeout(release, 5_000);
+}
+
+/** A call ringing for me, as the server reports it (GET /api/calls/incoming). */
+interface RingingCall {
+  conversationId: number;
+  callId: number | null;
+  callType: CallType;
+  fromUserId: number;
+  fromUserName: string;
+  isGroup: boolean;
+  groupName: string | null;
+}
+
 interface AgoraTokenResponse {
   appId: string;
   token: string;
@@ -141,7 +170,7 @@ export function useCallManager(myUserId: number | null) {
   const startingRef = useRef(false);
   // Every mic/camera track and call connection opened since the last hangup, so hangup can
   // close all of them even if a ref was overwritten.
-  const openedTracksRef = useRef<Set<{ close: () => void }>>(new Set());
+  const openedTracksRef = useRef<Set<LocalTrack>>(new Set());
   const openedClientsRef = useRef<Set<IAgoraRTCClient>>(new Set());
   const badStreakRef = useRef(0);
   const screenClientRef = useRef<IAgoraRTCClient | null>(null);
@@ -321,12 +350,12 @@ export function useCallManager(myUserId: number | null) {
     setNoiseSuppressionState(false);
     setBackgroundBlurState(false);
 
-    // Unpublish and close local Agora tracks
-    localAudioTrackRef.current?.close();
+    // Switch off and close every local track of this call (mic, camera, screen, and any duplicate).
+    releaseTracks([localAudioTrackRef.current, localVideoTrackRef.current, screenTrackRef.current, ...openedTracksRef.current]
+      .filter((t): t is NonNullable<typeof t> => !!t));
+    openedTracksRef.current.clear();
     localAudioTrackRef.current = null;
-    localVideoTrackRef.current?.close();
     localVideoTrackRef.current = null;
-    screenTrackRef.current?.close();
     screenTrackRef.current = null;
     screenClientRef.current?.leave().catch(() => {});
     screenClientRef.current = null;
@@ -336,10 +365,6 @@ export function useCallManager(myUserId: number | null) {
     setRaisedHands(new Set());
     setConnectionUnstable(false);
     badStreakRef.current = 0;
-
-    // Anything else opened during this call (e.g. a duplicate join) is closed too: no mic left on.
-    openedTracksRef.current.forEach((t) => { try { t.close(); } catch {} });
-    openedTracksRef.current.clear();
 
     // Leave Agora RTC channel
     if (agoraClientRef.current) {
@@ -580,6 +605,29 @@ export function useCallManager(myUserId: number | null) {
     setBackgroundBlurState(await applyBackgroundBlur(on));
   }, [applyBackgroundBlur]);
 
+  const incomingRef = useRef<CallSignal | null>(null);
+  useEffect(() => { incomingRef.current = incomingSignal; }, [incomingSignal]);
+
+  /** Show the ringing screen and play the ringtone for an incoming call. */
+  const ringIncoming = useCallback((signal: CallSignal, notify: boolean) => {
+    setIncomingSignal(signal);
+    // Tab in the background: also show a desktop notification (respects Do Not Disturb).
+    if (notify) {
+      desktopNotify(
+        signal.callType === "VIDEO" ? "🎥 Incoming video call" : "📞 Incoming voice call",
+        signal.isGroup ? `${signal.fromUserName} started a call in ${signal.groupName ?? "a group"}` : `${signal.fromUserName} is calling you`,
+        { tag: `call-${signal.conversationId}` },
+      );
+    }
+    stopRingtone();
+    ringtoneStopRef.current = startRingtone();
+    clearRingTimeout();
+    timeoutRef.current = setTimeout(() => {
+      stopRingtone();
+      setIncomingSignal(null);
+    }, signal.isGroup ? GROUP_RING_TIMEOUT_MS + 5_000 : RING_TIMEOUT_MS + 5_000);
+  }, [stopRingtone]);
+
   // Handle WebSocket call signaling
   useEffect(() => {
     if (!myUserId) return;
@@ -597,19 +645,19 @@ export function useCallManager(myUserId: number | null) {
               if (!signal.isGroup) sendSignal(signal.fromUserId, { type: "HANGUP", conversationId: signal.conversationId, callId: signal.callId });
               return;
             }
-            setIncomingSignal(signal);
-            // Tab in the background: also show a desktop notification (respects Do Not Disturb).
-            desktopNotify(
-              signal.callType === "VIDEO" ? "🎥 Incoming video call" : "📞 Incoming voice call",
-              signal.isGroup ? `${signal.fromUserName} started a call in ${signal.groupName ?? "a group"}` : `${signal.fromUserName} is calling you`,
-              { tag: `call-${signal.conversationId}` },
-            );
-            ringtoneStopRef.current = startRingtone();
-            clearRingTimeout();
-            timeoutRef.current = setTimeout(() => {
+            // Already ringing for this call (found when the app opened): don't start over.
+            if (incomingRef.current?.conversationId === signal.conversationId) return;
+            ringIncoming(signal, true);
+          } else if (signal.type === "ENDED") {
+            // Only that exact call: a new call in the same chat right after must not be cut off.
+            const sameCall = (c: { conversationId: number; callId?: number | null } | null) =>
+              !!c && (signal.callId ? c.callId === signal.callId : c.conversationId === signal.conversationId);
+            if (sameCall(activeCallRef.current)) hangup();
+            if (sameCall(incomingRef.current)) {
               stopRingtone();
+              clearRingTimeout();
               setIncomingSignal(null);
-            }, signal.isGroup ? GROUP_RING_TIMEOUT_MS + 5_000 : RING_TIMEOUT_MS + 5_000);
+            }
           } else if (signal.type === "ANSWER") {
             clearRingTimeout();
             stopRingtone();
@@ -637,7 +685,7 @@ export function useCallManager(myUserId: number | null) {
     return () => {
       sub?.unsubscribe();
     };
-  }, [myUserId, hangup, stopRingtone, updateCallState, sendSignal]);
+  }, [myUserId, hangup, stopRingtone, updateCallState, sendSignal, ringIncoming]);
 
   /** Creates the call-log record; failures don't block the call. */
   const logCallStart = async (conversationId: number, type: CallType): Promise<number | null> => {
@@ -770,6 +818,58 @@ export function useCallManager(myUserId: number | null) {
       startingRef.current = false;
     }
   }, [myUserId, joinChannel, hangup, sendSignal, stopRingtone, startPresence]);
+
+  /**
+   * The app was opened (or brought back on screen) while a call rings for me — e.g. from the call
+   * notification. Show the ringing screen, or answer straight away if "Answer" was tapped.
+   */
+  const resumeIncomingCall = useCallback(async (answerConversationId: number | null) => {
+    if (!myUserId || activeCallRef.current || startingRef.current) return;
+    let call: RingingCall | null;
+    try {
+      call = (await apiGet<{ call: RingingCall | null }>("/api/calls/incoming")).call;
+    } catch {
+      return;
+    }
+    if (!call || activeCallRef.current) return;
+    const signal: CallSignal = {
+      type: "OFFER", conversationId: call.conversationId, fromUserId: call.fromUserId, fromUserName: call.fromUserName,
+      toUserId: myUserId, callType: call.callType, callId: call.callId, isGroup: call.isGroup, groupName: call.groupName,
+      sdp: `call_conv_${call.conversationId}`,
+    };
+    if (answerConversationId === call.conversationId) {
+      acceptCall(signal, call.callType);
+      return;
+    }
+    if (incomingRef.current?.conversationId === call.conversationId) return;
+    ringIncoming(signal, false);
+  }, [myUserId, acceptCall, ringIncoming]);
+
+  // Opened from a call notification (?answer= / ?ringing=), told so by the service worker, or brought
+  // back on screen while something rings: catch up on the call instead of missing it.
+  useEffect(() => {
+    if (!myUserId) return;
+    const params = new URLSearchParams(window.location.search);
+    const conv = Number(params.get("conv")) || null;
+    if (params.has("answer") || params.has("ringing")) {
+      // Async (fetches the ringing call first); state is only set once it answers.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      resumeIncomingCall(params.has("answer") ? conv : null);
+      window.history.replaceState(null, "", window.location.pathname);
+    } else {
+      resumeIncomingCall(null);
+    }
+    const onVisible = () => { if (document.visibilityState === "visible") resumeIncomingCall(null); };
+    const onSwMessage = (e: MessageEvent) => {
+      if (e.data?.type === "call-action") resumeIncomingCall(e.data.answer ? e.data.conversationId : null);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    navigator.serviceWorker?.addEventListener("message", onSwMessage);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      navigator.serviceWorker?.removeEventListener("message", onSwMessage);
+    };
+  }, [myUserId, resumeIncomingCall]);
 
   // Join a group call that's already running (missed the ring, or rejoining after a drop).
   const joinOngoingCall = useCallback(async (conversationId: number, callId: number, callType: CallType, groupName: string) => {

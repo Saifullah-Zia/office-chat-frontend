@@ -4,13 +4,18 @@
  * - Static build assets: cache-first (their URLs are content-hashed).
  * - Pages: network-first, falling back to the last cached copy, then an offline page.
  * - Push: shows new-message notifications while the app is closed; tapping one opens the chat.
+ * - Calls: a ringing notification with Answer / Decline. The server re-sends it every few seconds (so the
+ *   phone keeps sounding and vibrating) and finally clears it, or turns it into "Missed call".
  * Registered as /sw.js?dev=1 in development: caching is off there so builds are never stale.
+ * ?api=<backend URL> tells it where to send "Decline" (it has no other way to know).
  */
 const VERSION = "v1";
 const STATIC_CACHE = `office-chat-static-${VERSION}`;
 const PAGE_CACHE = `office-chat-pages-${VERSION}`;
 const OFFLINE_URL = "/offline.html";
-const DEV = new URL(self.location.href).searchParams.get("dev") === "1";
+const SW_PARAMS = new URL(self.location.href).searchParams;
+const DEV = SW_PARAMS.get("dev") === "1";
+const API_BASE = (SW_PARAMS.get("api") || "").replace(/\/+$/, "");
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -69,9 +74,58 @@ self.addEventListener("fetch", (event) => {
 
 // ── Push notifications ─────────────────────────────────────────────────
 
+/** Is the app open and on screen? Then it rings / notifies by itself. */
+function appVisible() {
+  return self.clients.matchAll({ type: "window", includeUncontrolled: true })
+    .then((clients) => clients.some((c) => c.visibilityState === "visible" || c.focused));
+}
+
+function closeByTag(tag) {
+  return self.registration.getNotifications({ tag }).then((list) => list.forEach((n) => n.close()));
+}
+
 self.addEventListener("push", (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data && event.data.text() }; }
+
+  // Incoming call: ring like a phone call. Each re-sent push sounds and vibrates again.
+  if (data.type === "call") {
+    event.waitUntil(appVisible().then((visible) => {
+      if (visible) return;
+      return self.registration.showNotification(data.title || "Incoming call", {
+        body: data.body || "",
+        tag: data.tag,
+        renotify: true,
+        requireInteraction: true, // stays until answered, declined or cleared
+        vibrate: [800, 400, 800, 400, 800],
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
+        timestamp: Date.now(),
+        actions: [
+          { action: "answer", title: "✅ Answer" },
+          { action: "decline", title: "❌ Decline" },
+        ],
+        data: { kind: "call", ...data },
+      });
+    }));
+    return;
+  }
+
+  // Call answered elsewhere, declined, cancelled or timed out: stop ringing (and say "Missed call").
+  if (data.type === "call-cancel") {
+    event.waitUntil(closeByTag(data.tag).then(() => appVisible()).then((visible) => {
+      if (!data.missed || visible) return;
+      return self.registration.showNotification(data.title || "Missed call", {
+        body: data.body || "",
+        tag: "missed-" + data.conversationId,
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
+        data: { conversationId: data.conversationId },
+      });
+    }));
+    return;
+  }
+
   const title = data.title || "Office Chat";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
@@ -89,18 +143,45 @@ self.addEventListener("push", (event) => {
   );
 });
 
+/** Focus an open app window and send it a message, or open the app at a URL. */
+function openApp(message, url) {
+  return self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+    const client = clients.find((c) => new URL(c.url).origin === self.location.origin);
+    if (client) {
+      client.postMessage(message);
+      return client.focus();
+    }
+    return self.clients.openWindow(url);
+  });
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const { conversationId, messageId } = event.notification.data || {};
-  event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
-      const client = clients.find((c) => new URL(c.url).origin === self.location.origin);
-      if (client) {
-        client.postMessage({ type: "open-chat", conversationId, messageId });
-        return client.focus();
+  const data = event.notification.data || {};
+
+  if (data.kind === "call") {
+    if (event.action === "decline") {
+      // Decline without opening the app (the push carries a token for just this call).
+      if (API_BASE && data.callId && data.declineToken) {
+        event.waitUntil(fetch(API_BASE + "/api/calls/" + data.callId + "/push-decline", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: data.toUserId, token: data.declineToken }),
+        }).catch(() => {}));
       }
-      const query = conversationId ? `/?chat=${conversationId}${messageId ? `&message=${messageId}` : ""}` : "/";
-      return self.clients.openWindow(query);
-    })
-  );
+      return;
+    }
+    // "Answer" joins straight away; tapping the notification itself opens the ringing screen.
+    const answer = event.action === "answer";
+    const param = answer ? "answer" : "ringing";
+    event.waitUntil(openApp(
+      { type: "call-action", callId: data.callId, conversationId: data.conversationId, answer },
+      "/?" + param + "=" + (data.callId || "") + "&conv=" + data.conversationId,
+    ));
+    return;
+  }
+
+  const { conversationId, messageId } = data;
+  const query = conversationId ? "/?chat=" + conversationId + (messageId ? "&message=" + messageId : "") : "/";
+  event.waitUntil(openApp({ type: "open-chat", conversationId, messageId }, query));
 });

@@ -13,6 +13,7 @@ import GlobalSearchModal from "@/components/GlobalSearchModal";
 import Toaster from "@/components/Toaster";
 import IdleLock from "@/components/IdleLock";
 import { syncPushSubscription } from "@/lib/push";
+import { API_BASE } from "@/lib/config";
 
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -59,7 +60,9 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
   // (?dev=1) so it never serves stale builds, but push still works.
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
-    const url = process.env.NODE_ENV === "production" ? "/sw.js" : "/sw.js?dev=1";
+    // ?api= tells the worker where the backend is (for "Decline" on a call notification).
+    const api = `api=${encodeURIComponent(API_BASE)}`;
+    const url = process.env.NODE_ENV === "production" ? `/sw.js?${api}` : `/sw.js?dev=1&${api}`;
     navigator.serviceWorker.register(url)
       .then(() => syncPushSubscription())
       .catch((err) => console.warn("Service worker registration failed:", err));
