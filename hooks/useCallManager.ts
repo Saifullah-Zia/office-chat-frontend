@@ -153,6 +153,15 @@ interface AgoraTokenResponse {
 }
 
 const RING_TIMEOUT_MS = 30_000;
+/** Connecting a call (token, mic, joining) that takes longer than this is abandoned. */
+const JOIN_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("The call took too long to connect. Check your internet and try again.")), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
+}
 const GROUP_RING_TIMEOUT_MS = 45_000;
 
 /** Display name for an Agora uid (we use the user id as uid). */
@@ -663,8 +672,15 @@ export function useCallManager(myUserId: number | null) {
           if (signal.type === "OFFER") {
             // Already in a call: let the caller know we're busy (1:1 only).
             if (activeCallRef.current) {
-              if (!signal.isGroup) sendSignal(signal.fromUserId, { type: "HANGUP", conversationId: signal.conversationId, callId: signal.callId });
-              return;
+              const stuck = activeCallRef.current.connectionState !== "connected" && !activeCallRef.current.isInitiator;
+              if (!stuck) {
+                if (!signal.isGroup) sendSignal(signal.fromUserId, { type: "HANGUP", conversationId: signal.conversationId, callId: signal.callId });
+                return;
+              }
+              // An earlier answer that never connected: drop it quietly (no "hang up" sent, which would
+              // cut off this new call from the same person) and ring for this one.
+              activeCallRef.current = null;
+              hangup();
             }
             // Already ringing for this call (found when the app opened): don't start over.
             if (incomingRef.current?.conversationId === signal.conversationId) return;
@@ -738,7 +754,7 @@ export function useCallManager(myUserId: number | null) {
       activeCallRef.current = call;
       setActiveCall(call);
 
-      if (!(await joinChannel(channelName, type))) return;
+      if (!(await withTimeout(joinChannel(channelName, type), JOIN_TIMEOUT_MS))) return;
       ringtoneStopRef.current = startRingtone();
       timeoutRef.current = setTimeout(() => {
         if (participantsRef.current.length === 0) hangup();
@@ -775,7 +791,7 @@ export function useCallManager(myUserId: number | null) {
       activeCallRef.current = call;
       setActiveCall(call);
 
-      if (!(await joinChannel(channelName, type))) return;
+      if (!(await withTimeout(joinChannel(channelName, type), JOIN_TIMEOUT_MS))) return;
       if (callId) startPresence(callId);
       groupInviteesRef.current = memberIds.filter((id) => id !== myUserId);
       ringtoneStopRef.current = startRingtone();
@@ -825,7 +841,7 @@ export function useCallManager(myUserId: number | null) {
       setActiveCall(call);
       setIncomingSignal(null);
 
-      if (!(await joinChannel(channelName, callType))) return;
+      if (!(await withTimeout(joinChannel(channelName, callType), JOIN_TIMEOUT_MS))) return;
       if (signal.callId) apiPost(`/api/calls/${signal.callId}/accept`).catch(() => {});
       if (signal.isGroup && signal.callId) startPresence(signal.callId);
       await sendSignal(signal.fromUserId, {
@@ -903,7 +919,7 @@ export function useCallManager(myUserId: number | null) {
     activeCallRef.current = call;
     setActiveCall(call);
     try {
-      if (!(await joinChannel(`call_conv_${conversationId}`, callType))) return;
+      if (!(await withTimeout(joinChannel(`call_conv_${conversationId}`, callType), JOIN_TIMEOUT_MS))) return;
       startPresence(callId);
     } catch (err) {
       console.error("Failed to join the call:", err);

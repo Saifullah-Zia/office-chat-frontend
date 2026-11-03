@@ -143,15 +143,24 @@ self.addEventListener("push", (event) => {
   );
 });
 
-/** Focus an open app window and send it a message, or open the app at a URL. */
-function openApp(message, url) {
+/**
+ * Bring the app to the front at `url`. With reload (calls), an open window is sent to that address
+ * instead of only being messaged: a phone freezes pages in the background, and a frozen page never
+ * reads the message (tapping "Answer" then did nothing). No window open: opens the installed app.
+ */
+function openApp(message, url, reload) {
   return self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
     const client = clients.find((c) => new URL(c.url).origin === self.location.origin);
-    if (client) {
-      client.postMessage(message);
-      return client.focus();
-    }
-    return self.clients.openWindow(url);
+    if (!client) return self.clients.openWindow(url);
+    return client.focus()
+      .then((focused) => {
+        const w = focused || client;
+        if (reload && typeof w.navigate === "function") {
+          return w.navigate(url).catch(() => { w.postMessage(message); });
+        }
+        w.postMessage(message);
+      })
+      .catch(() => self.clients.openWindow(url));
   });
 }
 
@@ -177,6 +186,7 @@ self.addEventListener("notificationclick", (event) => {
     event.waitUntil(openApp(
       { type: "call-action", callId: data.callId, conversationId: data.conversationId, answer },
       "/?" + param + "=" + (data.callId || "") + "&conv=" + data.conversationId,
+      true,
     ));
     return;
   }
