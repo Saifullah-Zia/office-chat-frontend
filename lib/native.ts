@@ -11,6 +11,22 @@ interface OfficeChatPlugin {
   getPushToken(): Promise<{ token: string }>;
   /** Keeps a call (and the microphone) going while the app is in the background. */
   setInCall(options: { inCall: boolean }): Promise<void>;
+  getStatus(): Promise<NativeStatus>;
+  openAutoStartSettings(): Promise<{ opened: "autostart" | "phone-manager" | "app-info" }>;
+  openBatterySettings(): Promise<void>;
+}
+
+/** What could stop calls from ringing on this phone (Settings → Phone check). */
+export interface NativeStatus {
+  notificationsEnabled: boolean;
+  batteryUnrestricted: boolean;
+  /** When a push last reached this phone (ms; 0 = never), and whether the app was closed then. */
+  lastPushAt: number;
+  lastPushType: string | null;
+  lastPushAppClosed: boolean;
+  manufacturer: string;
+  model: string;
+  android: string;
 }
 
 interface CapacitorGlobal {
@@ -48,6 +64,21 @@ export async function registerNativePush(): Promise<void> {
   } catch (err) {
     console.warn("Couldn't register the phone for notifications:", err);
   }
+}
+
+/** Phone check (null outside the app, or in an older app version without it). */
+export async function getNativeStatus(): Promise<NativeStatus | null> {
+  try { return (await plugin()?.getStatus()) ?? null; } catch { return null; }
+}
+export async function openNativeAutoStart(): Promise<string | null> {
+  try { return (await plugin()?.openAutoStartSettings())?.opened ?? null; } catch { return null; }
+}
+export async function openNativeBattery(): Promise<void> {
+  try { await plugin()?.openBatterySettings(); } catch {}
+}
+/** Ask the server to ring this phone after `delaySeconds` (close the app meanwhile). Returns phones reached. */
+export async function sendNativeTest(delaySeconds: number): Promise<number> {
+  return (await apiPost<{ phones: number }>("/api/push/native/test", { delaySeconds })).phones;
 }
 
 /** A call started or ended (the Android app then shows "call in progress" and keeps it alive). */

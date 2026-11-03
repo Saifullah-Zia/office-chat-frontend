@@ -8,6 +8,8 @@ import QuickRepliesModal from "./QuickRepliesModal";
 import { currentSubscription, disablePush, enablePush, pushSupported } from "@/lib/push";
 import { showToast } from "@/lib/toast";
 import SecuritySettings from "./SecuritySettings";
+import PhoneCheck from "./PhoneCheck";
+import { isNativeApp } from "@/lib/native";
 import type { Theme } from "@/hooks/useTheme";
 import {
   FontSize, Wallpaper, getFontSize, setFontSize, getWallpaper, setWallpaper,
@@ -203,6 +205,13 @@ export default function SettingsModal({ onClose, theme, setTheme }: SettingsModa
               </label>
             )}
           </section>
+
+          {isNativeApp() && (
+            <section className="stm-section">
+              <h4><Smartphone size={14} /> Phone check</h4>
+              <PhoneCheck />
+            </section>
+          )}
 
           <section className="stm-section">
             <h4><Headphones size={14} /> Calls &amp; devices</h4>
