@@ -5,7 +5,7 @@ import { CheckCircle2, AlertTriangle, Loader2 } from "lucide-react";
 import { apiErrorMessage } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import {
-  NativeStatus, getNativeStatus, isNativeApp, openNativeAutoStart, openNativeBattery, registerNativePush, sendNativeTest,
+  NativeStatus, getNativeStatus, isNativeApp, openNativeAppInfo, openNativeAutoStart, openNativeBattery, registerNativePush, sendNativeTest,
 } from "@/lib/native";
 
 const TEST_DELAY = 30;
@@ -33,7 +33,11 @@ export default function PhoneCheck() {
   const test = async () => {
     setSending(true);
     try {
-      await registerNativePush(); // make sure the server has this phone's current token
+      // Make sure the server has this phone's current token first.
+      if (!(await registerNativePush())) {
+        showToast("This phone has no notification token yet. Check your internet, close and reopen the app, then retry.");
+        return;
+      }
       const phones = await sendNativeTest(TEST_DELAY);
       if (phones === 0) {
         showToast("This phone isn't registered for notifications yet. Sign out and in again, then retry.");
@@ -55,8 +59,10 @@ export default function PhoneCheck() {
     <div className="pck">
       <p className="pck-note">Can calls ring when the app is closed? Check these, then send a test.</p>
 
-      <Row ok={status?.notificationsEnabled}
-        label={status?.notificationsEnabled ? "Notifications allowed" : "Notifications are off: App info → Notifications → allow"} />
+      <Row ok={status?.notificationsEnabled} label="Notifications allowed"
+        fix={!status?.notificationsEnabled ? { text: "Open", onClick: () => openNativeAppInfo() } : undefined} />
+      <Row ok={status?.hasPushToken} label={status?.hasPushToken ? "Registered for calls" : "Not registered yet (needs internet)"}
+        fix={!status?.hasPushToken ? { text: "Retry", onClick: () => { registerNativePush().then(refresh); } } : undefined} />
       <Row ok={status?.batteryUnrestricted} label="Battery: not optimised"
         fix={!status?.batteryUnrestricted ? { text: "Fix", onClick: () => openNativeBattery() } : undefined} />
       {needsAutoStart && (
@@ -76,7 +82,7 @@ export default function PhoneCheck() {
           {status?.lastPushAppClosed ? " (app was closed: ✅ works)" : " (app was open)"}
         </p>
       )}
-      {status && <p className="pck-note pck-device">{status.manufacturer} {status.model} · Android {status.android}</p>}
+      {status && <p className="pck-note pck-device">{status.manufacturer} {status.model} · Android {status.android}{status.appVersion ? ` · app ${status.appVersion}` : ""}</p>}
 
       <style>{`
         .pck { display: flex; flex-direction: column; gap: 0.5rem; }
