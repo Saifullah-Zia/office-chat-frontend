@@ -53,8 +53,29 @@ function describeCallError(err: unknown): string {
   return `Couldn't connect the call.${msg ? ` (${code ? code + ": " : ""}${msg})` : ""}`;
 }
 
-// Web Audio API Ringtone Generator
+/**
+ * Ringtone: a real audio file on loop. Unlike generated beeps, an audio file keeps playing when the
+ * app goes to the background on a phone. Falls back to beeps if the browser blocks playback.
+ */
 function startRingtone(): () => void {
+  let stopped = false;
+  let stopBeeps: (() => void) | null = null;
+  const audio = typeof Audio !== "undefined" ? new Audio("/ringtone.wav") : null;
+  if (audio) {
+    audio.loop = true;
+    audio.play().catch(() => { if (!stopped) stopBeeps = startBeeps(); });
+  } else {
+    stopBeeps = startBeeps();
+  }
+  return () => {
+    stopped = true;
+    if (audio) { audio.pause(); audio.removeAttribute("src"); audio.load(); }
+    stopBeeps?.();
+  };
+}
+
+// Web Audio API ringtone (fallback)
+function startBeeps(): () => void {
   let audioCtx: AudioContext | null = null;
   let intervalId: NodeJS.Timeout | null = null;
 
