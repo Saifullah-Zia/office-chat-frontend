@@ -7,12 +7,6 @@ import { apiGet, apiPost } from "@/lib/api";
 
 const OPT_OUT_KEY = "office-chat-push-off";
 
-/** This browser is subscribed to push (set once registered with the server this session). */
-let pushActive = false;
-export function pushActiveHere(): boolean {
-  return pushActive;
-}
-
 export function pushSupported(): boolean {
   return typeof window !== "undefined"
     && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
@@ -50,7 +44,6 @@ export async function enablePush(): Promise<boolean> {
     sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(key) });
   }
   await apiPost("/api/push/subscribe", sub.toJSON());
-  pushActive = true;
   try { localStorage.removeItem(OPT_OUT_KEY); } catch {}
   return true;
 }
@@ -60,7 +53,6 @@ export async function disablePush(optOut = true): Promise<void> {
   if (optOut) {
     try { localStorage.setItem(OPT_OUT_KEY, "1"); } catch {}
   }
-  pushActive = false;
   const sub = await currentSubscription().catch(() => null);
   if (!sub) return;
   await apiPost("/api/push/unsubscribe", { endpoint: sub.endpoint }).catch(() => {});

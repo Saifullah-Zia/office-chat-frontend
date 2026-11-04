@@ -15,9 +15,8 @@ import {
 } from "@/types";
 import { subscribe, Topics } from "@/lib/socket";
 import { signOut } from "@/lib/signOut";
-import { pushActiveHere } from "@/lib/push";
 import { playMessageChime } from "@/lib/sound";
-import { desktopNotify } from "@/lib/notify";
+import { desktopNotify, messageNotify } from "@/lib/notify";
 import { showToast } from "@/lib/toast";
 import ActivityPanel, { ActivityTab } from "./ActivityPanel";
 import Avatar from "./Avatar";
@@ -331,12 +330,11 @@ export default function Sidebar() {
           // Mentions still alert in muted chats (like WhatsApp); plain messages don't.
           if (conv && isMutedConv(conv) && !mentionsMe) return;
           playMessageChime();
-          // In the background with push on: the push notification shows it; don't show it twice.
-          if (pushActiveHere() && document.visibilityState !== "visible") return;
-          desktopNotify(
+          messageNotify(
             conv?.type === "GROUP" ? `${msg.senderName} · ${conv.name ?? "Group"}` : msg.senderName,
             msg.content || "Sent an attachment",
-            { tag: `conv-${msg.conversationId}`, onClick: () => useStore.getState().openChatAt(msg.conversationId, msg.id) }
+            { conversationId: msg.conversationId, messageId: msg.id },
+            { toastInApp: true } // it's a different chat from the one on screen
           );
         });
       } catch (err) {

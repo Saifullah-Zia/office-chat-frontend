@@ -131,13 +131,17 @@ self.addEventListener("push", (event) => {
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       // The server only pushes when we look offline; skip it anyway if a window is open and focused.
       if (clients.some((c) => c.focused)) return;
-      return self.registration.showNotification(title, {
-        body: data.body || "",
-        tag: data.tag,
-        renotify: !!data.tag,
-        icon: "/icon-192.png",
-        badge: "/icon-192.png",
-        data: { conversationId: data.conversationId, messageId: data.messageId },
+      return self.registration.getNotifications(data.tag ? { tag: data.tag } : {}).then((shown) => {
+        // An open page can show the same message first (lib/notify.ts): don't alert twice.
+        if (data.messageId && shown.some((n) => n.data && n.data.messageId === data.messageId)) return;
+        return self.registration.showNotification(title, {
+          body: data.body || "",
+          tag: data.tag,
+          renotify: !!data.tag,
+          icon: "/icon-192.png",
+          badge: "/icon-192.png",
+          data: { conversationId: data.conversationId, messageId: data.messageId },
+        });
       });
     })
   );

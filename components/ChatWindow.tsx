@@ -31,7 +31,7 @@ import ChatInfoDrawer from "./ChatInfoDrawer";
 import CreatePollModal from "./CreatePollModal";
 import { useCallContext } from "@/context/CallContext";
 import { playMessageChime } from "@/lib/sound";
-import { desktopNotify } from "@/lib/notify";
+import { messageNotify } from "@/lib/notify";
 
 const EMPTY_MESSAGES: MessageResponse[] = [];
 const PAGE_SIZE = 30;
@@ -369,7 +369,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
             const isMuted = activeConv?.mutedUntil && new Date(activeConv.mutedUntil).getTime() > Date.now();
             if (!isMuted) {
               playMessageChime();
-              desktopNotify(msg.senderName, msg.content || "Sent an attachment", { tag: `conv-${msg.conversationId}` });
+              messageNotify(msg.senderName, msg.content || "Sent an attachment", { conversationId: msg.conversationId, messageId: msg.id });
             }
           }
         });
