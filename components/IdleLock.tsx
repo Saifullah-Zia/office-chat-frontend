@@ -6,11 +6,23 @@ import { apiErrorMessage, apiGet, apiPost } from "@/lib/api";
 import { useStore } from "@/lib/store";
 import { signOut } from "@/lib/signOut";
 import { ACTIVITY_KEY, LOCKED_KEY, isScreenLocked, lastActivity, markActivity, setScreenLocked } from "@/lib/idleLock";
+import { isNativeApp } from "@/lib/native";
 import Avatar from "./Avatar";
 
 const ACTIVITY_EVENTS = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart", "scroll"] as const;
 const WRITE_EVERY_MS = 15_000; // don't hammer localStorage on every mouse move
 const CHECK_EVERY_MS = 15_000;
+/** How text may reach the unlock box: typed or pasted. Anything else (a browser filling in a saved password) is refused. */
+const TYPED_INPUT = /^(insertText|insertCompositionText|insertFromPaste|delete)/;
+
+/**
+ * Masked plain-text box instead of type="password": browsers won't recognise it as a login and fill in a
+ * saved password, which would let anyone at the PC unlock. Falls back to a real password box where
+ * the mask isn't supported, and in the Android app (keyboards learn words typed into plain-text boxes).
+ */
+function canMaskTextBox(): boolean {
+  return !isNativeApp() && typeof CSS !== "undefined" && CSS.supports("-webkit-text-security", "disc");
+}
 
 /**
  * Locks the app after a period of no activity (company policy, default 30 min) so patient
@@ -20,7 +32,6 @@ const CHECK_EVERY_MS = 15_000;
 export default function IdleLock({ inCall, ringing }: { inCall: boolean; ringing: boolean }) {
   const userId = useStore((s) => s.userId);
   const userName = useStore((s) => s.userName);
-  const userEmail = useStore((s) => s.userEmail);
   const [minutes, setMinutes] = useState<number | null>(null);
   const [locked, setLocked] = useState(isScreenLocked);
   const [password, setPassword] = useState("");
@@ -87,8 +98,7 @@ export default function IdleLock({ inCall, ringing }: { inCall: boolean; ringing
     if (locked) setTimeout(() => inputRef.current?.focus(), 50);
   }, [locked]);
 
-  const unlock = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const unlock = async () => {
     if (!password || busy) return;
     setBusy(true);
     setError(null);
@@ -112,30 +122,40 @@ export default function IdleLock({ inCall, ringing }: { inCall: boolean; ringing
 
   return (
     <div className="ilk" role="dialog" aria-modal="true" aria-labelledby="ilk-title">
-      <form className="ilk-card" onSubmit={unlock}>
+      {/* A div, not a form: nothing here looks like a login for the browser to fill in or remember. */}
+      <div className="ilk-card">
         <div className="ilk-icon"><Lock size={20} /></div>
         <Avatar userId={userId} name={userName ?? "Me"} size={72} />
         <h2 id="ilk-title">{userName ?? "Locked"}</h2>
         <p className="ilk-sub">Office Chat was locked after {minutes ?? 30} minutes of inactivity.</p>
         {ringing && <p className="ilk-ring"><Phone size={14} /> Incoming call — unlock to answer</p>}
-        {/* Hidden username helps password managers fill the right account. */}
-        <input type="email" name="username" autoComplete="username" value={userEmail ?? ""} readOnly hidden />
         <input
           ref={inputRef}
-          type="password"
+          type={canMaskTextBox() ? "text" : "password"}
           className="ilk-input"
-          placeholder="Password"
-          autoComplete="current-password"
+          name="office-chat-unlock"
+          placeholder="Type your password"
+          autoComplete={canMaskTextBox() ? "off" : "new-password"}
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-bwignore="true"
           value={password}
-          onChange={(e) => setPassword(e.target.value)}
+          onChange={(e) => {
+            const how = (e.nativeEvent as InputEvent).inputType;
+            if (how && TYPED_INPUT.test(how)) setPassword(e.target.value);
+          }}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); unlock(); } }}
           aria-label="Password"
         />
         {error && <p className="ilk-error" role="alert">{error}</p>}
-        <button type="submit" className="ilk-btn" disabled={!password || busy}>
+        <button type="button" className="ilk-btn" onClick={unlock} disabled={!password || busy}>
           {busy && <Loader2 size={15} className="spin" />} Unlock
         </button>
         <button type="button" className="ilk-link" onClick={() => signOut()}>Not you? Sign out</button>
-      </form>
+      </div>
 
       <style>{`
         .ilk {
@@ -153,6 +173,7 @@ export default function IdleLock({ inCall, ringing }: { inCall: boolean; ringing
         .ilk-sub { margin: 0; font-size: 0.82rem; color: var(--text-muted); text-align: center; }
         .ilk-ring { margin: 0; display: flex; align-items: center; gap: 0.35rem; font-size: 0.82rem; font-weight: 600; color: var(--success, #16a34a); }
         .ilk-input { width: 100%; padding: 0.65rem 0.8rem; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary); font: inherit; font-size: 0.95rem; }
+        .ilk-input[type="text"] { -webkit-text-security: disc; }
         .ilk-input:focus { outline: none; border-color: var(--accent); }
         .ilk-error { margin: 0; align-self: stretch; font-size: 0.8rem; color: var(--danger); }
         .ilk-btn { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.65rem; border-radius: 10px; border: none; background: var(--accent); color: #fff; font-weight: 700; font-size: 0.9rem; cursor: pointer; }
