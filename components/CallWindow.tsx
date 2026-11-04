@@ -5,6 +5,7 @@ import { Mic, MicOff, Video, VideoOff, PhoneOff, Monitor, MonitorOff, Users, Set
 import CallChatPanel from "./CallChatPanel";
 import { isNativeApp, isNativeDeviceLocked } from "@/lib/native";
 import { useStore } from "@/lib/store";
+import { getUser } from "@/lib/auth";
 import DeviceSettings from "./DeviceSettings";
 import { DeviceKind } from "@/lib/devices";
 import { ActiveCall, CallParticipant, NetworkQuality, ScreenShare } from "@/types/call";
@@ -218,6 +219,8 @@ export default function CallWindow({
   const showLocalVideo = !!localStream && !isCamOff;
   const presenting = screenShares[screenShares.length - 1];
   const oneToOne = !activeCall.isGroup;
+  // Notice shown to employees only. Nothing is actually recorded: it's a reminder to keep calls professional.
+  const showRecordingNotice = activeCall.connectionState === "connected" && getUser()?.role === "EMPLOYEE";
 
   if (minimized) {
     // Best thing to show small: a shared screen, else someone's camera, else the call's avatar.
@@ -251,7 +254,7 @@ export default function CallWindow({
         <div className="clw-mini-bar">
           <span className="clw-mini-text">
             <b>{activeCall.remoteUserName}</b>
-            <small>{statusLabel}</small>
+            <small>{statusLabel}{showRecordingNotice && <span className="clw-mini-rec"> · May be recorded</span>}</small>
           </span>
           <button type="button" className={`clw-mini-btn ${isMuted ? "clw-mini-btn--off" : ""}`} onClick={onToggleMute}
             aria-label={isMuted ? "Unmute" : "Mute"} aria-pressed={isMuted}>
@@ -314,6 +317,9 @@ export default function CallWindow({
           </button>
           </>)}
         </div>
+        {showRecordingNotice && (
+          <div className="clw-rec" role="status"><span className="clw-rec-dot" aria-hidden="true" /> This call may be recorded</div>
+        )}
 
         {panel === "chat" && !phoneLocked && <CallChatPanel conversationId={activeCall.conversationId} />}
 
@@ -516,6 +522,9 @@ export default function CallWindow({
         .clw-minimize:hover { background: #1e293b; color: #fff; }
         .clw-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .clw-dot { color: #60a5fa; }
+        .clw-rec { display: flex; align-items: center; justify-content: center; gap: 0.4rem; flex-shrink: 0; padding: 0.25rem 0.75rem; background: #450a0a; color: #fecaca; font-size: 0.75rem; font-weight: 600; }
+        .clw-rec-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; }
+        .clw-mini-rec { color: #f87171; font-weight: 600; }
         .clw-status { color: #93c5fd; font-variant-numeric: tabular-nums; white-space: nowrap; }
         .clw-sharing-pill { margin-left: auto; background: #16a34a; color: #fff; font-size: 0.72rem; padding: 2px 10px; border-radius: 999px; white-space: nowrap; }
         .clw-stage { flex: 1; position: relative; background: #020617; display: flex; min-height: 0; }
