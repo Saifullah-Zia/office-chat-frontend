@@ -127,7 +127,7 @@ export default function IdleLock({ inCall, ringing }: { inCall: boolean; ringing
         <div className="ilk-icon"><Lock size={20} /></div>
         <Avatar userId={userId} name={userName ?? "Me"} size={72} />
         <h2 id="ilk-title">{userName ?? "Locked"}</h2>
-        <p className="ilk-sub">Office Chat was locked after {minutes ?? 30} minutes of inactivity.</p>
+        <p className="ilk-sub">Jcat Connect was locked after {minutes ?? 30} minutes of inactivity.</p>
         {ringing && <p className="ilk-ring"><Phone size={14} /> Incoming call — unlock to answer</p>}
         <input
           ref={inputRef}

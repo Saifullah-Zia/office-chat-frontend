@@ -1,4 +1,4 @@
-# Deploying Office Chat on Railway
+# Deploying Jcat Connect on Railway
 
 Three Railway services in one project: **Postgres**, **backend** (Spring Boot), **frontend** (Next.js).
 Sized for 20–40 people; expect roughly $15–25/month (check Railway's pricing page).

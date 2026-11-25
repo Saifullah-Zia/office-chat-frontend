@@ -108,7 +108,9 @@ export default function LoginPage() {
     <div className="login-shell">
       <div className="login-card">
         <div className="login-header">
-          <h2>Sign in to Office Chat</h2>
+          {/* eslint-disable-next-line @next/next/no-img-element -- tiny static logo */}
+          <img src="/icon-192.png" alt="" width={64} height={64} style={{ display: "block", margin: "0 auto 0.75rem", borderRadius: 14 }} />
+          <h2>Sign in to Jcat Connect</h2>
           <p>Enter your office credentials to access your workspace</p>
         </div>
 
@@ -131,7 +133,7 @@ export default function LoginPage() {
                 onChange={(e) => { setError(null); setMfaCode(e.target.value); }}
               />
               <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", margin: "0.4rem 0 0" }}>
-                Open your authenticator app and enter the 6-digit code for Office Chat. Lost your phone? Enter one of your recovery codes.
+                Open your authenticator app and enter the 6-digit code for Jcat Connect. Lost your phone? Enter one of your recovery codes.
               </p>
             </div>
             <button type="submit" disabled={isLoading || mfaCode.trim().length < 6} className="submit-btn">

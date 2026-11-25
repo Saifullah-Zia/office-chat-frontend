@@ -1,5 +1,5 @@
 /*
- * Office Chat service worker.
+ * Jcat Connect service worker.
  * - Never caches API calls, websockets or file downloads (always live, always authorised).
  * - Static build assets: cache-first (their URLs are content-hashed).
  * - Pages: network-first, falling back to the last cached copy, then an offline page.
@@ -9,7 +9,7 @@
  * Registered as /sw.js?dev=1 in development: caching is off there so builds are never stale.
  * ?api=<backend URL> tells it where to send "Decline" (it has no other way to know).
  */
-const VERSION = "v1";
+const VERSION = "v2"; // v2: Jcat Connect icons
 const STATIC_CACHE = `office-chat-static-${VERSION}`;
 const PAGE_CACHE = `office-chat-pages-${VERSION}`;
 const OFFLINE_URL = "/offline.html";
@@ -99,7 +99,7 @@ self.addEventListener("push", (event) => {
         requireInteraction: true, // stays until answered, declined or cleared
         vibrate: [800, 400, 800, 400, 800],
         icon: "/icon-192.png",
-        badge: "/icon-192.png",
+        badge: "/badge-96.png",
         timestamp: Date.now(),
         actions: [
           { action: "answer", title: "✅ Answer" },
@@ -119,14 +119,14 @@ self.addEventListener("push", (event) => {
         body: data.body || "",
         tag: "missed-" + data.conversationId,
         icon: "/icon-192.png",
-        badge: "/icon-192.png",
+        badge: "/badge-96.png",
         data: { conversationId: data.conversationId },
       });
     }));
     return;
   }
 
-  const title = data.title || "Office Chat";
+  const title = data.title || "Jcat Connect";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       // The server only pushes when we look offline; skip it anyway if a window is open and focused.
@@ -139,7 +139,7 @@ self.addEventListener("push", (event) => {
           tag: data.tag,
           renotify: !!data.tag,
           icon: "/icon-192.png",
-          badge: "/icon-192.png",
+          badge: "/badge-96.png",
           data: { conversationId: data.conversationId, messageId: data.messageId },
         });
       });

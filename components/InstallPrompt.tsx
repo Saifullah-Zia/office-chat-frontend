@@ -33,7 +33,7 @@ function isInstalled(): boolean {
 }
 
 /**
- * "Install Office Chat" popup when the app is opened in a browser; disappears after 10 seconds.
+ * "Install Jcat Connect" popup when the app is opened in a browser; disappears after 10 seconds.
  * Chrome/Edge/Android get a real Install button; iPhone/iPad get Add-to-Home-Screen steps.
  * Not shown when already installed; "Not now" hides it for a week, otherwise at most once a day.
  */
@@ -96,11 +96,11 @@ export default function InstallPrompt() {
   if (!mode) return null;
 
   return (
-    <div className="inp" role="dialog" aria-live="polite" aria-label="Install Office Chat">
+    <div className="inp" role="dialog" aria-live="polite" aria-label="Install Jcat Connect">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src="/icon-192.png" alt="" className="inp-icon" width={44} height={44} />
       <div className="inp-text">
-        <b>Install Office Chat</b>
+        <b>Install Jcat Connect</b>
         {mode === "install" ? (
           <span>Open it like an app, and get call and message alerts even when it&apos;s closed.</span>
         ) : (

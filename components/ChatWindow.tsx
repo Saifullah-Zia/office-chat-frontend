@@ -792,7 +792,7 @@ export default function ChatWindow({ conversationId }: ChatWindowProps) {
     s.conversations.reduce((sum, c) => sum + (c.unreadCount ?? 0), 0)
   );
   useEffect(() => {
-    document.title = totalUnread > 0 ? `(${totalUnread > 99 ? "99+" : totalUnread}) Office Chat` : "Office Chat";
+    document.title = totalUnread > 0 ? `(${totalUnread > 99 ? "99+" : totalUnread}) Jcat Connect` : "Jcat Connect";
   }, [totalUnread]);
 
   // Reset unread on tab focus

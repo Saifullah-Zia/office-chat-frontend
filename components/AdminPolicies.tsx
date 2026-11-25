@@ -80,7 +80,7 @@ export default function AdminPolicies() {
       <section className="apo-card">
         <h4><Lock size={16} /> Screen lock after inactivity</h4>
         <p className="apo-note">
-          After this long with no mouse or keyboard activity, Office Chat locks and asks for the password again.
+          After this long with no mouse or keyboard activity, Jcat Connect locks and asks for the password again.
           It never locks during a call. Takes effect when people next open or refresh the app.
         </p>
         {lockMinutes === null ? (

@@ -543,8 +543,9 @@ export default function Sidebar() {
       {/* brand */}
       <div className="sb-brand">
         <div className="sb-brand-left">
-          <div className="sb-logo"><MessageSquare size={18} /></div>
-          <h1>Office Chat</h1>
+          {/* eslint-disable-next-line @next/next/no-img-element -- tiny static logo */}
+          <img src="/icon-192.png" alt="" className="sb-logo" width={32} height={32} />
+          <h1>Jcat Connect</h1>
         </div>
         <div className="sb-brand-actions">
 {userRole !== "PROVIDER" && (
@@ -965,7 +966,7 @@ export default function Sidebar() {
 
         .sb-brand { padding:1rem 1rem 0.5rem;display:flex;align-items:center;justify-content:space-between;gap:0.5rem; }
         .sb-brand-left { display:flex;align-items:center;gap:0.5rem;min-width:0;flex-shrink:1; }
-        .sb-logo { width:32px;height:32px;border-radius:8px;background:var(--accent-gradient);color:var(--text-on-accent);display:flex;align-items:center;justify-content:center; }
+        .sb-logo { width:32px;height:32px;border-radius:8px;flex-shrink:0; }
         .sb-brand h1 { font-size:1.125rem;font-weight:800;color:var(--text-primary);margin:0;letter-spacing:-0.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
         /* One row of header buttons; the title shrinks (ellipsis) before anything wraps */
         .sb-brand-actions { display:flex;gap:0.25rem;flex-shrink:0; }
