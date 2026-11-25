@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import QRCode from "qrcode";
-import { Ban, Check, Download, Loader2, Pencil, QrCode, Trash2 } from "lucide-react";
+import { Ban, Check, Download, ImagePlus, Loader2, Pencil, QrCode, Trash2 } from "lucide-react";
 import { apiDelete, apiErrorMessage, apiGet, apiPost, apiPut } from "@/lib/api";
 import { isNativeApp } from "@/lib/native";
+import { qrPng, qrSvg, readLogo, svgDataUrl } from "@/lib/qr";
 import { showToast } from "@/lib/toast";
 
 interface QrItem {
@@ -19,6 +19,8 @@ interface QrItem {
   createdAt: string;
   /** What the printed code holds. */
   content: string;
+  /** Centre logo (PNG data URL). */
+  logo: string | null;
 }
 
 /** Dark colours only: pale codes don't scan. */
@@ -30,35 +32,28 @@ const COLORS = [
   { value: "#7f1d1d", label: "Maroon" },
 ];
 
-// Margin 4 is the quiet zone scanners need; Q still reads with about a quarter of the print damaged.
-const options = (color: string) => ({ margin: 4, errorCorrectionLevel: "Q" as const, color: { dark: color, light: "#ffffff" } });
-
-function Preview({ content, color }: { content: string; color: string }) {
+function Preview({ content, color, logo }: { content: string; color: string; logo: string | null }) {
   const [src, setSrc] = useState("");
   useEffect(() => {
     let live = true;
-    QRCode.toDataURL(content, { ...options(color), width: 240 }).then((s) => { if (live) setSrc(s); }).catch(() => {});
+    qrSvg(content, color, logo, 320).then((s) => { if (live) setSrc(svgDataUrl(s)); }).catch(() => {});
     return () => { live = false; };
-  }, [content, color]);
+  }, [content, color, logo]);
   // eslint-disable-next-line @next/next/no-img-element -- generated data URL
   return src ? <img src={src} alt="QR code" className="aqr-img" /> : <span className="aqr-img" />;
 }
 
 async function download(item: QrItem, color: string, kind: "svg" | "png") {
   try {
-    const name = `qr-${item.clientName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || item.id}.${kind}`;
-    let href: string;
-    if (kind === "svg") {
-      const svg = await QRCode.toString(item.content, { ...options(color), type: "svg" });
-      href = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
-    } else {
-      href = await QRCode.toDataURL(item.content, { ...options(color), width: 1600 });
-    }
+    const blob = kind === "svg"
+      ? new Blob([await qrSvg(item.content, color, item.logo)], { type: "image/svg+xml" })
+      : await qrPng(item.content, color, item.logo);
+    const href = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = href;
-    a.download = name;
+    a.download = `qr-${item.clientName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || item.id}.${kind}`;
     a.click();
-    if (kind === "svg") setTimeout(() => URL.revokeObjectURL(href), 5_000);
+    setTimeout(() => URL.revokeObjectURL(href), 5_000);
   } catch {
     showToast("Couldn't make the QR code file.");
   }
@@ -75,6 +70,7 @@ export default function AdminQrCodes() {
   const [failed, setFailed] = useState(false);
   const [clientName, setClientName] = useState("");
   const [url, setUrl] = useState("");
+  const [logo, setLogo] = useState<string | null>(null);
   const [managed, setManaged] = useState(true);
   const [color, setColor] = useState(COLORS[0].value);
   const [editing, setEditing] = useState<QrItem | null>(null);
@@ -87,7 +83,18 @@ export default function AdminQrCodes() {
 
   const replace = (next: QrItem) => setItems((list) => (list ?? []).map((q) => (q.id === next.id ? next : q)));
 
-  const reset = () => { setEditing(null); setClientName(""); setUrl(""); };
+  const reset = () => { setEditing(null); setClientName(""); setUrl(""); setLogo(null); };
+
+  const pickLogo = async (input: HTMLInputElement) => {
+    const file = input.files?.[0];
+    input.value = ""; // the same file can be picked again
+    if (!file) return;
+    try {
+      setLogo(await readLogo(file));
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "That picture couldn't be read.");
+    }
+  };
 
   const run = async (action: () => Promise<void>) => {
     if (busy) return;
@@ -103,10 +110,10 @@ export default function AdminQrCodes() {
 
   const save = () => run(async () => {
     if (editing) {
-      replace(await apiPut<QrItem>(`/api/admin/qr-codes/${editing.id}`, { clientName, url }));
+      replace(await apiPut<QrItem>(`/api/admin/qr-codes/${editing.id}`, { clientName, url, logo: logo ?? "" }));
       showToast("QR code updated");
     } else {
-      const made = await apiPost<QrItem>("/api/admin/qr-codes", { clientName, url, managed });
+      const made = await apiPost<QrItem>("/api/admin/qr-codes", { clientName, url, managed, logo });
       setItems((list) => [made, ...(list ?? [])]);
       showToast("QR code created");
     }
@@ -141,6 +148,15 @@ export default function AdminQrCodes() {
           value={clientName} onChange={(e) => setClientName(e.target.value)} />
         <input className="aqr-input" placeholder="Website, e.g. https://example.com" aria-label="Website" maxLength={500} required
           inputMode="url" autoCapitalize="off" value={url} disabled={!!editing && !editing.managed} onChange={(e) => setUrl(e.target.value)} />
+        <div className="aqr-row">
+          {/* eslint-disable-next-line @next/next/no-img-element -- picked picture */}
+          {logo && <img src={logo} alt="Logo" className="aqr-logo" />}
+          <label className="aqr-btn">
+            <ImagePlus size={13} /> {logo ? "Change logo" : "Add logo (optional)"}
+            <input type="file" accept="image/png,image/jpeg,image/webp" className="aqr-file" onChange={(e) => pickLogo(e.target)} />
+          </label>
+          {logo && <button type="button" className="aqr-btn" onClick={() => setLogo(null)}>Remove</button>}
+        </div>
         {!editing && (
           <div className="aqr-types" role="radiogroup" aria-label="Type">
             <label className={`aqr-type ${managed ? "aqr-type--on" : ""}`}>
@@ -175,7 +191,7 @@ export default function AdminQrCodes() {
       {items?.length === 0 && <p className="aqr-note">No QR codes yet.</p>}
       {items?.map((q) => (
         <div key={q.id} className="aqr-card aqr-item">
-          <Preview content={q.content} color={color} />
+          <Preview content={q.content} color={color} logo={q.logo} />
           <div className="aqr-info">
             <b>{q.clientName}</b>
             <a href={q.targetUrl} target="_blank" rel="noopener noreferrer">{q.targetUrl}</a>
@@ -198,7 +214,7 @@ export default function AdminQrCodes() {
                 </button>
               )}
               <button type="button" className="aqr-btn" aria-label={`Edit ${q.clientName}`} title="Edit"
-                onClick={() => { setEditing(q); setClientName(q.clientName); setUrl(q.targetUrl); }}><Pencil size={13} /></button>
+                onClick={() => { setEditing(q); setClientName(q.clientName); setUrl(q.targetUrl); setLogo(q.logo); }}><Pencil size={13} /></button>
               <button type="button" className="aqr-btn" aria-label={`Delete ${q.clientName}`} title="Delete" disabled={busy} onClick={() => remove(q)}><Trash2 size={13} /></button>
             </div>
           </div>
@@ -211,6 +227,9 @@ export default function AdminQrCodes() {
         .aqr-card h4 { margin: 0; display: flex; align-items: center; gap: 0.45rem; font-size: 0.9rem; color: var(--text-primary); }
         .aqr-input { width: 100%; padding: 0.55rem 0.7rem; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); font: inherit; font-size: 0.85rem; }
         .aqr-input:disabled { opacity: 0.6; }
+        .aqr-logo { height: 36px; max-width: 120px; object-fit: contain; background: #fff; border: 1px solid var(--border); border-radius: 6px; padding: 2px; }
+        .aqr-file { position: absolute; width: 1px; height: 1px; opacity: 0; }
+        .aqr-btn:focus-within { border-color: var(--accent); }
         .aqr-types { display: flex; flex-direction: column; gap: 0.4rem; }
         .aqr-type { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.6rem 0.7rem; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-primary); cursor: pointer; }
         .aqr-type--on { border-color: var(--accent); background: var(--accent-soft); }
