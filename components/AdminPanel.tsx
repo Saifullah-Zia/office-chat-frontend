@@ -10,6 +10,7 @@ import AdminReports from "./AdminReports";
 import AdminAudit from "./AdminAudit";
 import AdminAnalytics from "./AdminAnalytics";
 import AdminPolicies from "./AdminPolicies";
+import AdminQrCodes from "./AdminQrCodes";
 import AddUserModal from "./AddUserModal";
 import ImportUsersModal from "./ImportUsersModal";
 import ResetPasswordModal from "./ResetPasswordModal";
@@ -23,7 +24,7 @@ interface AdminPanelProps {
   initialSection?: AdminSection;
 }
 
-export type AdminSection = "users" | "analytics" | "reports" | "audit" | "policies";
+export type AdminSection = "users" | "analytics" | "reports" | "audit" | "policies" | "qr";
 
 export default function AdminPanel({ open, onClose, onUsersChanged, initialSection = "users" }: AdminPanelProps) {
   const [allUsers, setAllUsers] = useState<UserResponse[]>([]);
@@ -139,6 +140,7 @@ export default function AdminPanel({ open, onClose, onUsersChanged, initialSecti
             ["reports", openReports > 0 ? `Reports (${openReports})` : "Reports"],
             ["audit", "Audit log"],
             ["policies", "Policies"],
+            ["qr", "QR codes"],
           ] as const).map(([key, label]) => (
             <button
               key={key}
@@ -156,6 +158,7 @@ export default function AdminPanel({ open, onClose, onUsersChanged, initialSecti
         {section === "audit" && <AdminAudit />}
         {section === "analytics" && <AdminAnalytics />}
         {section === "policies" && <AdminPolicies />}
+        {section === "qr" && <AdminQrCodes />}
 
         {section === "users" && (<>
         {/* Stats bar */}

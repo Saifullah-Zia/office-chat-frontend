@@ -44,7 +44,7 @@ self.addEventListener("fetch", (event) => {
 
   // Only handle our own origin; API/websocket traffic goes to the backend origin and is left alone.
   if (url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws")) return;
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws") || url.pathname.startsWith("/q/")) return;
 
   if (url.pathname.startsWith("/_next/static/") || /\.(png|svg|ico|woff2?)$/.test(url.pathname)) {
     event.respondWith(
