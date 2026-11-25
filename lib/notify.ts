@@ -62,8 +62,8 @@ export function messageNotify(
         body: locked ? "You have new activity. Unlock to see it." : body,
         tag,
         renotify: true,
-        icon: "/icon-192.png",
-        badge: "/badge-96.png",
+        icon: "/jcat-icon-192.png",
+        badge: "/jcat-badge-96.png",
         data: ids,
       } as NotificationOptions);
     })

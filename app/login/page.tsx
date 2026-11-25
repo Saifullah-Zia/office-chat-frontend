@@ -109,7 +109,7 @@ export default function LoginPage() {
       <div className="login-card">
         <div className="login-header">
           {/* eslint-disable-next-line @next/next/no-img-element -- tiny static logo */}
-          <img src="/icon-192.png" alt="" width={64} height={64} style={{ display: "block", margin: "0 auto 0.75rem", borderRadius: 14 }} />
+          <img src="/jcat-icon-192.png" alt="" width={64} height={64} style={{ display: "block", margin: "0 auto 0.75rem", borderRadius: 14 }} />
           <h2>Sign in to Jcat Connect</h2>
           <p>Enter your office credentials to access your workspace</p>
         </div>

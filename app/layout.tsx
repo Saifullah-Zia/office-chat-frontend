@@ -8,8 +8,8 @@ export const metadata: Metadata = {
   applicationName: "Jcat Connect",
   appleWebApp: { capable: true, title: "Jcat Connect", statusBarStyle: "default" },
   icons: {
-    icon: [{ url: "/icon-192.png", sizes: "192x192", type: "image/png" }],
-    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180" }],
+    icon: [{ url: "/jcat-icon-192.png", sizes: "192x192", type: "image/png" }],
+    apple: [{ url: "/jcat-apple-touch-icon.png", sizes: "180x180" }],
   },
 };
 

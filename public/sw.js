@@ -9,7 +9,7 @@
  * Registered as /sw.js?dev=1 in development: caching is off there so builds are never stale.
  * ?api=<backend URL> tells it where to send "Decline" (it has no other way to know).
  */
-const VERSION = "v2"; // v2: Jcat Connect icons
+const VERSION = "v3"; // v3: Jcat Connect icons
 const STATIC_CACHE = `office-chat-static-${VERSION}`;
 const PAGE_CACHE = `office-chat-pages-${VERSION}`;
 const OFFLINE_URL = "/offline.html";
@@ -20,7 +20,7 @@ const API_BASE = (SW_PARAMS.get("api") || "").replace(/\/+$/, "");
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(STATIC_CACHE)
-      .then((cache) => cache.addAll([OFFLINE_URL, "/icon-192.png", "/icon-512.png"]))
+      .then((cache) => cache.addAll([OFFLINE_URL, "/jcat-icon-192.png", "/jcat-icon-512.png"]))
       .then(() => self.skipWaiting())
   );
 });
@@ -98,8 +98,8 @@ self.addEventListener("push", (event) => {
         renotify: true,
         requireInteraction: true, // stays until answered, declined or cleared
         vibrate: [800, 400, 800, 400, 800],
-        icon: "/icon-192.png",
-        badge: "/badge-96.png",
+        icon: "/jcat-icon-192.png",
+        badge: "/jcat-badge-96.png",
         timestamp: Date.now(),
         actions: [
           { action: "answer", title: "✅ Answer" },
@@ -118,8 +118,8 @@ self.addEventListener("push", (event) => {
       return self.registration.showNotification(data.title || "Missed call", {
         body: data.body || "",
         tag: "missed-" + data.conversationId,
-        icon: "/icon-192.png",
-        badge: "/badge-96.png",
+        icon: "/jcat-icon-192.png",
+        badge: "/jcat-badge-96.png",
         data: { conversationId: data.conversationId },
       });
     }));
@@ -138,8 +138,8 @@ self.addEventListener("push", (event) => {
           body: data.body || "",
           tag: data.tag,
           renotify: !!data.tag,
-          icon: "/icon-192.png",
-          badge: "/badge-96.png",
+          icon: "/jcat-icon-192.png",
+          badge: "/jcat-badge-96.png",
           data: { conversationId: data.conversationId, messageId: data.messageId },
         });
       });

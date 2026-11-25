@@ -98,7 +98,7 @@ export default function InstallPrompt() {
   return (
     <div className="inp" role="dialog" aria-live="polite" aria-label="Install Jcat Connect">
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src="/icon-192.png" alt="" className="inp-icon" width={44} height={44} />
+      <img src="/jcat-icon-192.png" alt="" className="inp-icon" width={44} height={44} />
       <div className="inp-text">
         <b>Install Jcat Connect</b>
         {mode === "install" ? (

@@ -2,7 +2,6 @@
 
 import { useStore } from "@/lib/store";
 import ChatWindow from "@/components/ChatWindow";
-import { MessageSquare } from "lucide-react";
 
 export default function ChatPage() {
   const activeConversationId = useStore((s) => s.activeConversationId);
@@ -12,7 +11,8 @@ export default function ChatPage() {
       <div className="empty-state">
         <div className="empty-card">
           <div className="empty-icon-box">
-            <MessageSquare size={36} />
+            {/* eslint-disable-next-line @next/next/no-img-element -- tiny static logo */}
+            <img src="/jcat-icon-192.png" alt="" width={72} height={72} style={{ borderRadius: 16 }} />
           </div>
           <h2>Select a Conversation</h2>
           <p>Choose a chat from the sidebar or start a new direct message to begin</p>
@@ -33,11 +33,6 @@ export default function ChatPage() {
             padding: 2rem;
           }
           .empty-icon-box {
-            width: 64px;
-            height: 64px;
-            border-radius: 16px;
-            background: #e0e7ff;
-            color: #4f46e5;
             display: flex;
             align-items: center;
             justify-content: center;
