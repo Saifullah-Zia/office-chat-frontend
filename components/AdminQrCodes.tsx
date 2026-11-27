@@ -184,7 +184,7 @@ export default function AdminQrCodes() {
             className={`aqr-color ${color === c.value ? "aqr-color--on" : ""}`} style={{ background: c.value }} onClick={() => setColor(c.value)} />
         ))}
       </div>
-      {native && <p className="aqr-note">To download QR codes, open Jcat Connect on a computer.</p>}
+      {native && <p className="aqr-note">To download QR codes, open JCAT Connect on a computer.</p>}
 
       {failed && <p className="aqr-note">Couldn&apos;t load the QR codes. Close this panel and try again.</p>}
       {!items && !failed && <p className="aqr-note"><Loader2 size={14} className="spin" /> Loading…</p>}

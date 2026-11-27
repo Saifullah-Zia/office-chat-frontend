@@ -1,5 +1,5 @@
 /*
- * Jcat Connect service worker.
+ * JCAT Connect service worker.
  * - Never caches API calls, websockets or file downloads (always live, always authorised).
  * - Static build assets: cache-first (their URLs are content-hashed).
  * - Pages: network-first, falling back to the last cached copy, then an offline page.
@@ -9,7 +9,7 @@
  * Registered as /sw.js?dev=1 in development: caching is off there so builds are never stale.
  * ?api=<backend URL> tells it where to send "Decline" (it has no other way to know).
  */
-const VERSION = "v3"; // v3: Jcat Connect icons
+const VERSION = "v4"; // v4: JCAT Connect name in capitals
 const STATIC_CACHE = `office-chat-static-${VERSION}`;
 const PAGE_CACHE = `office-chat-pages-${VERSION}`;
 const OFFLINE_URL = "/offline.html";
@@ -126,7 +126,7 @@ self.addEventListener("push", (event) => {
     return;
   }
 
-  const title = data.title || "Jcat Connect";
+  const title = data.title || "JCAT Connect";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       // The server only pushes when we look offline; skip it anyway if a window is open and focused.

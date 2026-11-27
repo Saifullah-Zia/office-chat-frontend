@@ -1,10 +1,10 @@
 import type { MetadataRoute } from "next";
 
-/** Makes Jcat Connect installable ("Add to Home Screen" / "Install app"). */
+/** Makes JCAT Connect installable ("Add to Home Screen" / "Install app"). */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Jcat Connect",
-    short_name: "Jcat Connect",
+    name: "JCAT Connect",
+    short_name: "JCAT Connect",
     description: "Secure real-time workplace chat",
     start_url: "/",
     scope: "/",

@@ -34,22 +34,22 @@ export function phoneReady(status: NativeStatus | null): boolean {
 export function brandTips(status: NativeStatus | null): string | null {
   const b = status?.manufacturer?.toLowerCase() ?? "";
   if (/samsung/.test(b)) {
-    return "Samsung: Settings → Battery → Background usage limits → Never sleeping apps → add Jcat Connect. Also App info → Battery → Unrestricted.";
+    return "Samsung: Settings → Battery → Background usage limits → Never sleeping apps → add JCAT Connect. Also App info → Battery → Unrestricted.";
   }
   if (/xiaomi|redmi|poco/.test(b)) {
-    return "Xiaomi: App info → Autostart ON, and Battery saver → No restrictions. In Recents, long-press Jcat Connect → 🔒 Lock.";
+    return "Xiaomi: App info → Autostart ON, and Battery saver → No restrictions. In Recents, long-press JCAT Connect → 🔒 Lock.";
   }
   if (/oppo|realme|oneplus/.test(b)) {
-    return "Oppo / Realme / OnePlus: App info → Battery → Allow background activity, and Allow auto launch. In Recents, lock Jcat Connect 🔒.";
+    return "Oppo / Realme / OnePlus: App info → Battery → Allow background activity, and Allow auto launch. In Recents, lock JCAT Connect 🔒.";
   }
   if (/vivo|iqoo/.test(b)) {
-    return "Vivo: i Manager → App manager → Autostart → Jcat Connect ON. Battery → Background power consumption → Allow.";
+    return "Vivo: i Manager → App manager → Autostart → JCAT Connect ON. Battery → Background power consumption → Allow.";
   }
   if (/infinix|tecno|itel/.test(b)) {
-    return "Infinix / Tecno / itel: Phone Master → Auto-start Management → Jcat Connect ON, and Phone Master → Protected apps → Jcat Connect.";
+    return "Infinix / Tecno / itel: Phone Master → Auto-start Management → JCAT Connect ON, and Phone Master → Protected apps → JCAT Connect.";
   }
   if (/huawei|honor/.test(b)) {
-    return "Huawei / Honor: Phone Manager → App launch → Jcat Connect → Manage manually → turn all three ON. (Phones without Google services can't receive calls while closed.)";
+    return "Huawei / Honor: Phone Manager → App launch → JCAT Connect → Manage manually → turn all three ON. (Phones without Google services can't receive calls while closed.)";
   }
   return null;
 }

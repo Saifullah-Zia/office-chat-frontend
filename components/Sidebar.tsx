@@ -545,7 +545,7 @@ export default function Sidebar() {
         <div className="sb-brand-left">
           {/* eslint-disable-next-line @next/next/no-img-element -- tiny static logo */}
           <img src="/jcat-icon-192.png" alt="" className="sb-logo" width={40} height={40} />
-          <h1>Jcat<br />Connect</h1>
+          <h1>JCAT<br />Connect</h1>
         </div>
         <div className="sb-brand-actions">
 {userRole !== "PROVIDER" && (

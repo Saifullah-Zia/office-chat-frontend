@@ -18,7 +18,7 @@ export function desktopNotify(
   if (Notification.permission !== "granted") return;
   if (!opts.force && (!shouldAlert() || document.hasFocus())) return;
   // Screen locked for inactivity: don't put message text on a shared PC's screen.
-  if (isScreenLocked()) { title = "Jcat Connect"; body = "You have new activity. Unlock to see it."; }
+  if (isScreenLocked()) { title = "JCAT Connect"; body = "You have new activity. Unlock to see it."; }
   try {
     // renotify: a repeat with the same tag pops up again instead of silently replacing the last one.
     const options = { body, tag: opts.tag, ...(opts.tag ? { renotify: true } : {}) } as NotificationOptions;
@@ -58,7 +58,7 @@ export function messageNotify(
       const shown = await reg.getNotifications({ tag });
       if (shown.some((x) => x.data?.messageId === ids.messageId)) return;
       const locked = isScreenLocked();
-      await reg.showNotification(locked ? "Jcat Connect" : title, {
+      await reg.showNotification(locked ? "JCAT Connect" : title, {
         body: locked ? "You have new activity. Unlock to see it." : body,
         tag,
         renotify: true,

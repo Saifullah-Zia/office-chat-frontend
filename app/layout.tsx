@@ -3,10 +3,10 @@ import "./globals.css";
 import InstallPrompt from "@/components/InstallPrompt";
 
 export const metadata: Metadata = {
-  title: "Jcat Connect",
+  title: "JCAT Connect",
   description: "Secure Real-time Enterprise Workspace Chat Application",
-  applicationName: "Jcat Connect",
-  appleWebApp: { capable: true, title: "Jcat Connect", statusBarStyle: "default" },
+  applicationName: "JCAT Connect",
+  appleWebApp: { capable: true, title: "JCAT Connect", statusBarStyle: "default" },
   icons: {
     icon: [{ url: "/jcat-icon-192.png", sizes: "192x192", type: "image/png" }],
     apple: [{ url: "/jcat-apple-touch-icon.png", sizes: "180x180" }],
